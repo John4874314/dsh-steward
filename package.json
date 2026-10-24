@@ -1,0 +1,65 @@
+{
+  "name": "dsh-steward",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Conversation steward for DeepSeek Harness: one folder per conversation, a recoverable Delete conversation row, right-click file actions, and the three-rule safety baseline written into the global AGENTS.md.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "chat-manager",
+    "guardrails"
+  ],
+  "license": "MIT",
+  "author": "John4874314",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/John4874314/dsh-steward.git"
+  },
+  "homepage": "https://github.com/John4874314/dsh-steward#readme",
+  "bugs": {
+    "url": "https://github.com/John4874314/dsh-steward/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "AGENTS.guardrails.md",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}
