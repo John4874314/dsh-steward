@@ -24,23 +24,37 @@ DSH 原生把「对话」放在侧边栏，但：
 
 ## 安装
 
-```sh
-dsh plugin --profile <你的 profile> add dsh-steward
-```
+把 `<profile>` 换成你的 profile 名（桌面端通常是 `desktop`，Web 端通常是 `web`）。
 
-> 把 `<你的 profile>` 换成实际名字（桌面端通常是 `desktop`，Web 端通常是 `web`）。
-> 装完**硬刷新浏览器**（`Ctrl/Cmd + Shift + R`）。
-
-### 从 GitHub 直接装（还没发 npm 时用这个）
+### 方式一：tarball（推荐，不依赖 git）
 
 ```sh
-dsh plugin --profile desktop add github:John4874314/dsh-steward
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.0.0
 ```
+
+不要求本机装 git，也不要求 `github.com:443` 可直连 —— 只走 `codeload.github.com`。
+
+### 方式二：`github:` 简写
+
+```sh
+dsh plugin --profile <profile> add github:John4874314/dsh-steward
+```
+
+需要本机 `PATH` 里有 `git`，且能连上 `github.com:443`。在国内网络下
+`github.com` 常常超时（`api.github.com` / `codeload.github.com` 却正常），
+这时会报 `ERR_PNPM_GIT_RESOLVE_FAILED`，换方式一即可。
+
+### 装完之后
+
+**重启 DSH**。客户端 bundle 图在进程启动时构建，只按 `Ctrl/Cmd + Shift + R` 刷新页面
+不会重新扫描新插件。
 
 ### 环境要求
 
-- DSH **0.2.1-rc.1** 或更新
+- DSH **0.2.1-rc.1** 或更新（在 `0.2.1-rc.3` 上实测通过）
 - Node ≥ 20
+
+> 尚未发布到 npm。`dsh plugin add dsh-steward` 现在装不到东西，请用上面两种方式。
 
 ## 功能
 
