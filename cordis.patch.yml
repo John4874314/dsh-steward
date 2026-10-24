@@ -1,0 +1,22 @@
+# dsh-steward bundle patch
+#
+# 1. 重新启用 agent-instructions —— web-app bundle 把它 disabled 了，
+#    而「运行守则」要靠它读取 AGENTS.md 才能进入上下文。
+#    maxBytes 是必填项，不给会 schema 校验失败。
+# 2. 插入 dsh-steward 本体：对话文件夹 / 删除对话 / 文件右键菜单 / 运行守则。
+- id: agent-instructions
+  disabled: false
+  config:
+    maxBytes: 262144
+
+- insert:
+    - id: dsh-steward
+      name: 'dsh-steward'
+      config:
+        guardrails:
+          install: true
+        folder:
+          enabled: false
+          trigger: first-message
+          template: 'chat-{date}-{time}'
+          useAsWorkingDirectory: false
