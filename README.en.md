@@ -25,23 +25,40 @@ This plugin does all four, in **one bundle, one switch, one settings page**.
 
 ## Install
 
-```sh
-dsh plugin --profile <your-profile> add dsh-steward
-```
+Replace `<profile>` with your profile name (usually `desktop` for the desktop app,
+`web` for the browser build).
 
-> Replace `<your-profile>` with the real name (usually `desktop` for the desktop app,
-> `web` for the browser build). **Hard-refresh the browser** (`Ctrl/Cmd + Shift + R`) afterwards.
-
-### Straight from GitHub (before the npm release)
+### Option 1 — tarball (recommended, no git needed)
 
 ```sh
-dsh plugin --profile desktop add github:John4874314/dsh-steward
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.0.0
 ```
+
+No local `git` required, and no direct `github.com:443` access required — it only
+touches `codeload.github.com`.
+
+### Option 2 — the `github:` shorthand
+
+```sh
+dsh plugin --profile <profile> add github:John4874314/dsh-steward
+```
+
+Requires `git` on `PATH` and reachable `github.com:443`. On mainland-China networks
+`github.com` frequently times out while `api.github.com` / `codeload.github.com` work
+fine; that surfaces as `ERR_PNPM_GIT_RESOLVE_FAILED`. Use Option 1 in that case.
+
+### After installing
+
+**Restart DSH.** The client bundle graph is built at process start, so a plain browser
+hard-refresh (`Ctrl/Cmd + Shift + R`) will not pick up a new plugin.
 
 ### Requirements
 
-- DSH **0.2.1-rc.1** or newer
+- DSH **0.2.1-rc.1** or newer (verified on `0.2.1-rc.3`)
 - Node ≥ 20
+
+> Not published to npm yet. `dsh plugin add dsh-steward` will not resolve — use one of
+> the two options above.
 
 ## Features
 
