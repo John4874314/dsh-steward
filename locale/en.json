@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-steward",
+    "description": "Conversation steward: a folder per conversation, a Delete conversation row in the session menu (with an optional folder delete), right-click file actions (open folder / copy path / save as / open with), and the three-rule safety baseline written into the global AGENTS.md."
+  }
+}
