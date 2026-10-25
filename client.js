@@ -12,7 +12,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: 'dsh-steward',
+  id: '@local/dsh-steward',
   factory(require) {
     const React = require('react')
     const h = React.createElement
@@ -92,6 +92,53 @@ window.__ModuleLoader__.load({
         moveToTrashDone: '已移到回收站',
         renameFailed: '重命名失败',
         trashFailed: '移到回收站失败',
+
+        /* ---- 文件类型分组 ---- */
+        kindImage: '图片',
+        kindCode: '代码',
+        kindDoc: '文档',
+        kindArchive: '压缩包',
+        kindMedia: '音视频',
+        kindBinary: '可执行文件',
+        kindOther: '文件',
+
+        /* ---- 类型专属动作 ---- */
+        openInEditor: '用编辑器打开',
+        openWithOffice: '用 Office 打开',
+        copyContent: '复制文件内容',
+        copyContentDone: '内容已复制',
+        copyCode: '复制代码',
+        copyCodeDone: '代码已复制',
+        copyAsMarkdown: '复制为 Markdown 代码块',
+        copyAsMarkdownDone: '已复制为 Markdown',
+        extractHere: '解压到此处',
+        extractDone: '已解压到',
+        extractFailed: '解压失败',
+        extractExists: '同名目录已存在，先处理它再解压',
+        showInfo: '文件信息',
+        fileSize: '大小',
+        modifiedAt: '修改时间',
+        tooLargeToCopy: '文件太大，无法复制内容',
+        noContent: '读不到文件内容',
+
+        /* ---- 网址菜单 ---- */
+        urlMenu: '网址',
+        openInBrowser: '在默认浏览器打开',
+        openInBrowserNamed: '用 {name} 打开',
+        copyUrl: '复制网址',
+        copyUrlDone: '网址已复制',
+        copyUrlMarkdown: '复制为 Markdown 链接',
+        copyUrlMarkdownDone: '已复制为 Markdown 链接',
+        chooseBrowser: '用其它浏览器打开',
+        noBrowsers: '没有找到其它浏览器',
+        urlFailed: '打开网址失败',
+        urlNotAllowed: '只支持 http/https 网址',
+        credUrlBadge: '⚠ 这个网址包含账号密码',
+        credUrlWarning: '这个网址把账号密码直接写在地址里（密码已用 *** 隐藏）。\n打开它会把凭据发送给目标站点，请确认来源可信。\n\n确定要在浏览器中打开吗？',
+
+        /* ---- 文件树 ---- */
+        treeMenu: '文件树',
+        refreshTree: '刷新文件列表',
 
         tabs: { conversation: '对话', trash: '回收站', backup: '备份', guardrails: '运行守则', doctor: '体检' },
         sidebarTabDesc: '对话管家：回收站、备份、运行守则与体检',
@@ -198,6 +245,49 @@ window.__ModuleLoader__.load({
         moveToTrashDone: 'Moved to trash',
         renameFailed: 'Rename failed',
         trashFailed: 'Could not move to trash',
+
+        kindImage: 'Image',
+        kindCode: 'Code',
+        kindDoc: 'Document',
+        kindArchive: 'Archive',
+        kindMedia: 'Media',
+        kindBinary: 'Executable',
+        kindOther: 'File',
+
+        openInEditor: 'Open in editor',
+        openWithOffice: 'Open with Office',
+        copyContent: 'Copy file contents',
+        copyContentDone: 'Contents copied',
+        copyCode: 'Copy code',
+        copyCodeDone: 'Code copied',
+        copyAsMarkdown: 'Copy as Markdown code block',
+        copyAsMarkdownDone: 'Copied as Markdown',
+        extractHere: 'Extract here',
+        extractDone: 'Extracted to',
+        extractFailed: 'Extraction failed',
+        extractExists: 'A folder with that name already exists',
+        showInfo: 'File information',
+        fileSize: 'Size',
+        modifiedAt: 'Modified',
+        tooLargeToCopy: 'File is too large to copy',
+        noContent: 'Could not read the file',
+
+        urlMenu: 'Link',
+        openInBrowser: 'Open in default browser',
+        openInBrowserNamed: 'Open in {name}',
+        copyUrl: 'Copy link',
+        copyUrlDone: 'Link copied',
+        copyUrlMarkdown: 'Copy as Markdown link',
+        copyUrlMarkdownDone: 'Copied as Markdown link',
+        chooseBrowser: 'Open in another browser',
+        noBrowsers: 'No other browser found',
+        urlFailed: 'Could not open the link',
+        urlNotAllowed: 'Only http/https links are supported',
+        credUrlBadge: '⚠ This link contains credentials',
+        credUrlWarning: 'This link puts a username and password directly in the address (the password is masked as ***).\nOpening it sends those credentials to the destination site. Make sure you trust it.\n\nOpen it in the browser?',
+
+        treeMenu: 'Files',
+        refreshTree: 'Refresh file list',
 
         tabs: { conversation: 'Conversation', trash: 'Trash', backup: 'Backups', guardrails: 'Guardrails', doctor: 'Checkup' },
         sidebarTabDesc: 'Steward: trash, backups, guardrails and checkup',
@@ -630,6 +720,28 @@ window.__ModuleLoader__.load({
   text-transform: uppercase;
   color: var(--dsw-alias-label-secondary);
 }
+
+/* 菜单里作为第一行的类型标签：紧跟在路径下面，所以上间距收一点 */
+.cm-path + .cm-group { padding-top: 2px; }
+
+/* 带账号密码的网址：整块用警示色，提醒用户这条链接会把凭据发出去 */
+.cm-ctxmenu[data-cm-credential="true"] .cm-path {
+  color: var(--dsw-alias-state-warn-primary);
+}
+.cm-group.cm-cred {
+  padding-top: 2px;
+  padding-bottom: 6px;
+  color: var(--dsw-alias-state-warn-primary);
+  text-transform: none;
+  letter-spacing: 0.01em;
+  font-size: 11.5px;
+}
+
+/* 不同类型给一个极轻的色相提示，扫一眼就知道这是哪类文件 */
+.cm-ctxmenu[data-cm-kind="image"] .cm-path + .cm-group { color: var(--dsw-alias-state-success-primary); }
+.cm-ctxmenu[data-cm-kind="code"] .cm-path + .cm-group { color: var(--dsw-alias-brand-primary); }
+.cm-ctxmenu[data-cm-kind="archive"] .cm-path + .cm-group { color: var(--dsw-alias-state-warn-primary); }
+.cm-ctxmenu[data-cm-kind="binary"] .cm-path + .cm-group { color: var(--dsw-alias-state-error-primary); }
 
 /* 提示 / 空态 / 结果 */
 .cm-note {
@@ -1372,7 +1484,96 @@ window.__ModuleLoader__.load({
             h('span', null, t('menuOpenFolder')))
         }
 
-﻿        /* ---------------- 交付物文件：右键菜单 ---------------- */
+﻿        /* ---------------- 文件类型识别 ---------------- */
+
+        /**
+         * 按扩展名把文件分成几组，每组给一套专属菜单。
+         *
+         * 为什么要分组而不是一个大菜单：用户右键一张图片和右键一个 zip，
+         * 想做的事完全不同。把 20 个菜单项全塞给每个文件，等于没给。
+         *
+         * 分组是**纯客户端**的判断，不查宿主、不发命令，所以右键瞬间就能出菜单。
+         */
+        const EXT_GROUPS = {
+          image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif', 'tif', 'tiff'],
+          code: [
+            'js', 'mjs', 'cjs', 'ts', 'mts', 'cts', 'jsx', 'tsx', 'py', 'rb', 'go', 'rs',
+            'java', 'kt', 'kts', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'cs', 'php', 'swift',
+            'lua', 'pl', 'r', 'scala', 'sh', 'bash', 'zsh', 'fish', 'ps1', 'psm1', 'bat', 'cmd',
+            'sql', 'html', 'htm', 'css', 'scss', 'sass', 'less', 'vue', 'svelte',
+            'json', 'jsonc', 'yaml', 'yml', 'toml', 'ini', 'conf', 'env', 'xml', 'gradle',
+            'dockerfile', 'makefile', 'cmake', 'gitignore', 'editorconfig',
+          ],
+          doc: ['md', 'markdown', 'mdx', 'txt', 'rtf', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'csv', 'odt', 'ods', 'odp', 'epub'],
+          archive: ['zip', '7z', 'rar', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'zst', 'iso', 'cab'],
+          media: ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'opus'],
+          binary: ['exe', 'msi', 'dll', 'so', 'dylib', 'bin', 'app', 'deb', 'rpm', 'apk', 'jar', 'wasm'],
+        }
+
+        /** 把扩展名映射到分组名；认不出来就归到 other。 */
+        function kindOf(path) {
+          const name = String(path ?? '').split(/[\\/]/).pop() ?? ''
+          const dot = name.lastIndexOf('.')
+          // 无扩展名但有名的构建文件（Dockerfile / Makefile）按代码处理
+          if (dot <= 0) {
+            const lower = name.toLowerCase()
+            if (['dockerfile', 'makefile', 'cmakelists.txt', 'procfile'].includes(lower)) return 'code'
+            return 'other'
+          }
+          const ext = name.slice(dot + 1).toLowerCase()
+          for (const [kind, list] of Object.entries(EXT_GROUPS)) {
+            if (list.includes(ext)) return kind
+          }
+          return 'other'
+        }
+
+        /** 分组名 -> 语言包里的标题键。 */
+        const KIND_LABEL = {
+          image: 'kindImage', code: 'kindCode', doc: 'kindDoc',
+          archive: 'kindArchive', media: 'kindMedia', binary: 'kindBinary', other: 'kindOther',
+        }
+
+        /**
+         * 判断一个右键目标是不是网址链接。
+         *
+         * 只认 http/https：`javascript:`、`data:`、`file:` 一律不接管，
+         * 让它们落到原生菜单（或什么都不发生），避免把恶意链接递进打开通道。
+         */
+        function urlOf(target) {
+          if (target === null || typeof target.closest !== 'function') return undefined
+          const anchor = target.closest('a[href]')
+          if (anchor === null) return undefined
+          const href = String(anchor.getAttribute('href') ?? '').trim()
+          if (href.length === 0) return undefined
+          let parsed
+          try {
+            parsed = new URL(href, window.location.href)
+          } catch {
+            return undefined
+          }
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined
+          const hasCredentials = parsed.username !== '' || parsed.password !== ''
+          return {
+            url: parsed.href,
+            text: String(anchor.textContent ?? '').trim(),
+            hasCredentials,
+            // 显示用：密码换成 ***，用户名保留（用户需要知道是哪个账号）
+            displayUrl: hasCredentials ? maskCredentials(parsed) : parsed.href,
+          }
+        }
+
+        /** 把 URL 里的密码换成 ***，保留用户名。 */
+        function maskCredentials(parsed) {
+          try {
+            const copy = new URL(parsed.href)
+            if (copy.password !== '') copy.password = '***'
+            return copy.href
+          } catch {
+            return String(parsed.href)
+          }
+        }
+
+        /* ---------------- 交付物文件：右键菜单 ---------------- */
 
         /**
          * 在文件卡片上点右键，直接弹出操作菜单。
@@ -1385,16 +1586,45 @@ window.__ModuleLoader__.load({
          * 其余地方的右键行为完全不受影响。
          */
         function FileContextMenu() {
-          const [menu, setMenu] = useState(null)   // { x, y, path }
+          const [menu, setMenu] = useState(null)   // { x, y, path } 或 { x, y, url, text }
           const [apps, setApps] = useState(null)
+          const [browsers, setBrowsers] = useState(null)
           const [busy, setBusy] = useState(false)
           const [note, setNote] = useState('')
           const boxRef = useRef(null)
 
+          // 路径 / URL 都用 base64 传：Windows 路径常带空格，URL 里常带 & 和 ?，
+          // 直接拼进命令行会被拆断或被 shell 解释。
+          const encodeArg = (text) => {
+            const bytes = new TextEncoder().encode(String(text))
+            let binary = ''
+            for (const byte of bytes) binary += String.fromCharCode(byte)
+            return btoa(binary)
+          }
+
           /** 从右键目标往上找文件卡片，取出它的绝对路径。 */
-          const pathOf = (target) => {
+          const pathOf = (target, event) => {
             if (target === null || typeof target.closest !== 'function') return undefined
 
+            /**
+             * 有些容器（尤其 Electron 里被 portal 包过的层）会让 event.target 被 retarget
+             * 成宿主元素，这时从 target 往上 closest 就找不到卡片内部的标记。
+             * 先按 target 走正常路径，找不到再用 composedPath 里的每个节点重试一遍。
+             */
+            const fromTarget = pathOfNode(target)
+            if (fromTarget !== undefined) return fromTarget
+            const path = typeof event?.composedPath === 'function' ? event.composedPath() : []
+            for (const node of path) {
+              if (node === target) continue
+              if (node === null || typeof node.closest !== 'function') continue
+              const found = pathOfNode(node)
+              if (found !== undefined) return found
+            }
+            return undefined
+          }
+
+          /** 真正的标记解析：给一个 DOM 节点，往上找它所属的文件卡片。 */
+          const pathOfNode = (target) => {
             const review = target.closest('[data-review-file]')
             if (review !== null) {
               const value = review.getAttribute('data-review-file')
@@ -1407,24 +1637,79 @@ window.__ModuleLoader__.load({
               }
             }
 
+            /**
+             * 右侧「文件」树。
+             *
+             * 这里给的 data-files-path 是**工作区相对**路径，单看它没法定位磁盘文件。
+             * 但树的根节点（data-files-root）是绝对路径，两者拼起来就是绝对路径。
+             * 顺序很重要：先找最近的 [data-files-path]，再往上找 [data-files-root]，
+             * 否则会拿到树根而不是被点的那个文件。
+             */
+            const treeRow = target.closest('[data-files-entry]')
+            if (treeRow !== null) {
+              const rowPath = treeRow.getAttribute('data-files-path')
+              if (typeof rowPath === 'string' && rowPath.length > 0) {
+                const treeRoot = treeRow.closest('[data-files-root]')
+                const root = treeRoot === null ? '' : String(treeRoot.getAttribute('data-files-root') ?? '')
+                if (/^[A-Za-z]:[\\/]/.test(rowPath) || rowPath.startsWith('\\\\') || rowPath.startsWith('/')) {
+                  return rowPath
+                }
+                if (root.length > 0) {
+                  const sep = root.includes('\\') ? '\\' : '/'
+                  return `${root.replace(/[\\/]+$/, '')}${sep}${rowPath.replace(/^[\\/]+/, '')}`
+                }
+                return rowPath
+              }
+            }
+
             const card = target.closest('[data-presented-file]')
             if (card !== null) {
-              const preview = card.querySelector('[title]')
-              const title = preview === null ? '' : String(preview.getAttribute('title') ?? '')
-              if (title.length > 0) return title
-              const named = card.querySelector('[data-presented-description]')
-              void named
+              // 卡片的 title 挂在 .cardPreview 这个 button 上，值是宿主解析过的绝对路径。
+              // 但它不是卡片里唯一的 title（图标、状态行也可能有），所以要挑**看起来像
+              // 绝对路径**的那一个，而不是简单取第一个。
+              const looksAbsolute = (text) => /^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\\\') || text.startsWith('/')
+              const titled = card.querySelectorAll('[title]')
+              for (const node of titled) {
+                const value = String(node.getAttribute('title') ?? '')
+                if (looksAbsolute(value)) return value
+              }
+              const first = titled.item(0)
+              const fallback = first === null ? '' : String(first.getAttribute('title') ?? '')
+              if (fallback.length > 0) return fallback
+            }
+
+            // 兜底：从交付物行容器往上找，命中整行（点到卡片之间的空隙时）
+            const row = target.closest('[data-presented-files-row]')
+            if (row !== null) {
+              const looksAbsolute = (text) => /^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\\\') || text.startsWith('/')
+              const titled = row.querySelectorAll('[title]')
+              for (const node of titled) {
+                const value = String(node.getAttribute('title') ?? '')
+                if (looksAbsolute(value)) return value
+              }
             }
             return undefined
           }
 
           useEffect(() => {
             const onContextMenu = (event) => {
-              const path = pathOf(event.target)
+              // 网址优先判定：链接里可能嵌着文件卡片的样式，但用户点的是链接本身
+              const link = urlOf(event.target)
+              if (link !== undefined) {
+                event.preventDefault()
+                event.stopPropagation()
+                setApps(null)
+                setNote('')
+                setMenu({ x: event.clientX, y: event.clientY, url: link.url, text: link.text })
+                return
+              }
+
+              const path = pathOf(event.target, event)
               if (path === undefined) return      // 不是文件卡片：放行原生菜单
               event.preventDefault()
               event.stopPropagation()
               setApps(null)
+              setBrowsers(null)
               setNote('')
               setMenu({ x: event.clientX, y: event.clientY, path })
             }
@@ -1440,11 +1725,29 @@ window.__ModuleLoader__.load({
               const isMenuKey = event.key === 'F10' && event.shiftKey
               const isContextKey = event.key === 'ContextMenu'
               if (!isMenuKey && !isContextKey) return
-              const path = pathOf(event.target)
+
+              // 链接也能用键盘唤出菜单，和鼠标右键同一套动作
+              const link = urlOf(event.target)
+              if (link !== undefined) {
+                event.preventDefault()
+                const anchor = event.target.closest('a[href]')
+                const rect = anchor?.getBoundingClientRect?.()
+                setApps(null)
+                setNote('')
+                setMenu({
+                  x: rect === undefined ? event.clientX : Math.round(rect.left + 12),
+                  y: rect === undefined ? event.clientY : Math.round(rect.bottom - 6),
+                  url: link.url,
+                  text: link.text,
+                })
+                return
+              }
+
+              const path = pathOf(event.target, event)
               if (path === undefined) return
               event.preventDefault()
               const target = typeof event.target.closest === 'function'
-                ? (event.target.closest('[data-presented-file]') ?? event.target.closest('[data-review-file]'))
+                ? (event.target.closest('[data-presented-file]') ?? event.target.closest('[data-review-file]') ?? event.target.closest('[data-files-entry]'))
                 : null
               const rect = target?.getBoundingClientRect?.()
               setApps(null)
@@ -1478,18 +1781,142 @@ window.__ModuleLoader__.load({
 
           if (menu === null) return null
 
+          /* ---- 网址菜单：和文件菜单共用一个外壳，但动作集合完全不同 ---- */
+          if (typeof menu.url === 'string') {
+            const urlHeight = 210
+            const ux = Math.min(menu.x, Math.max(8, window.innerWidth - 260 - 8))
+            const uy = Math.min(menu.y, Math.max(8, window.innerHeight - urlHeight - 8))
+
+            const copy = async (value, doneKey) => {
+              if (busy) return
+              setBusy(true)
+              setNote('')
+              try {
+                await navigator.clipboard.writeText(value)
+                setNote(t(doneKey))
+                window.setTimeout(() => setMenu(null), 600)
+              } catch (failure) {
+                setNote(String(failure?.message ?? failure))
+              } finally {
+                setBusy(false)
+              }
+            }
+
+            /**
+             * 打开网址。
+             *
+             * 走宿主命令而不是 window.open：window.open 会被浏览器的弹窗拦截器
+             * 当成脚本行为拦下（右键菜单的点击不是用户对"打开新窗口"的直接手势），
+             * 而且宿主那边对 http/https 有明确的白名单处理。
+             */
+            /**
+             * 打开网址。
+             *
+             * 走宿主命令而不是 window.open：window.open 会被浏览器的弹窗拦截器
+             * 当成脚本行为拦下（右键菜单的点击不是用户对"打开新窗口"的直接手势），
+             * 而且宿主那边对 http/https 有明确的白名单处理。
+             *
+             * 带账号密码的 URL 先弹一次确认：这类链接会把凭据明文塞进地址栏，
+             * 用户可能根本没注意到自己在打开一个带密码的地址。确认框把这件事摆明，
+             * 但不阻止 —— 用户明确同意后照常打开。
+             */
+            const openUrl = async (browserId) => {
+              if (busy) return
+
+              if (menu.hasCredentials === true) {
+                const shown = menu.displayUrl ?? menu.url
+                const ok = window.confirm(`${t('credUrlWarning')}\n\n${shown}`)
+                if (!ok) return
+              }
+
+              setBusy(true)
+              setNote('')
+              try {
+                const line = browserId === undefined
+                  ? `/chat-file --action=open-url --url64=${encodeArg(menu.url)}`
+                  : `/chat-file --action=open-url --url64=${encodeArg(menu.url)} --browser=${browserId}`
+                await runCommand(sessionIdOf(), line)
+                setMenu(null)
+              } catch (failure) {
+                setNote(String(failure?.message ?? failure))
+              } finally {
+                setBusy(false)
+              }
+            }
+
+            const loadBrowsers = async () => {
+              if (busy) return
+              setBusy(true)
+              setNote('')
+              try {
+                const text = await runCommand(sessionIdOf(), '/chat-file --action=browsers')
+                const parsed = JSON.parse(String(text ?? '{}'))
+                const list = Array.isArray(parsed?.browsers) ? parsed.browsers : []
+                setBrowsers(list.map((one) => ({ id: String(one.id), name: String(one.name) })))
+                if (list.length === 0) setNote(t('noBrowsers'))
+              } catch (failure) {
+                setNote(String(failure?.message ?? failure))
+              } finally {
+                setBusy(false)
+              }
+            }
+
+            const urlItem = (label, onClick) => h('button', {
+              type: 'button',
+              role: 'menuitem',
+              className: 'cm-item',
+              disabled: busy,
+              onClick: (event) => { event.preventDefault(); event.stopPropagation(); onClick() },
+            }, label)
+
+            const scheme = (() => {
+              try {
+                const active = ctx.theme?.getTheme?.()?.active?.colorScheme
+                return active === 'light' ? 'light' : 'dark'
+              } catch {
+                return 'dark'
+              }
+            })()
+
+            return h('div', {
+              ref: boxRef,
+              role: 'menu',
+              className: 'cm-ctxmenu',
+              'data-cm-scheme': scheme,
+              'data-cm-credential': menu.hasCredentials === true ? 'true' : undefined,
+              style: { left: `${ux}px`, top: `${uy}px` },
+              onContextMenu: (event) => event.preventDefault(),
+            },
+            // 顶部显示打码后的 URL：密码变成 ***，避免在菜单里把密码亮出来
+            h('div', { className: 'cm-path', title: menu.displayUrl ?? menu.url },
+              menu.displayUrl ?? menu.url),
+            menu.hasCredentials === true
+              ? h('div', { className: 'cm-group cm-cred' }, t('credUrlBadge'))
+              : null,
+            urlItem(t('openInBrowser'), () => openUrl()),
+            browsers === null
+              ? urlItem(t('chooseBrowser'), loadBrowsers)
+              : h('div', null,
+                h('div', { className: 'cm-group' }, t('chooseBrowser')),
+                browsers.length === 0
+                  ? h('div', { className: 'cm-empty' }, t('noBrowsers'))
+                  : h('div', { className: 'cm-apps' }, browsers.map((one) => urlItem(
+                    t('openInBrowserNamed').replace('{name}', one.name),
+                    () => openUrl(one.id),
+                  )))),
+            urlItem(t('copyUrl'), () => copy(menu.url, 'copyUrlDone')),
+            urlItem(t('copyUrlMarkdown'), () => copy(
+              `[${menu.text.length > 0 ? menu.text : menu.displayUrl ?? menu.url}](${menu.url})`,
+              'copyUrlMarkdownDone',
+            )),
+            note.length > 0 ? h('div', { className: 'cm-note' }, note) : null)
+          }
+
           // 菜单不要超出视口
           const width = 200
           const height = apps === null ? 190 : 190 + Math.min(apps.length, 6) * 28
           const x = Math.min(menu.x, Math.max(8, window.innerWidth - width - 8))
           const y = Math.min(menu.y, Math.max(8, window.innerHeight - height - 8))
-          // 路径用 base64 传：Windows 路径常带空格，直接拼进命令行会被拆断。
-          const encodeArg = (text) => {
-            const bytes = new TextEncoder().encode(String(text))
-            let binary = ''
-            for (const byte of bytes) binary += String.fromCharCode(byte)
-            return btoa(binary)
-          }
 
           // 直接用 Session Remote 的桌面能力，不走「会话命令」通道。
           //
@@ -1645,6 +2072,77 @@ window.__ModuleLoader__.load({
             )
           }
 
+          /* ---- 类型专属动作 ---- */
+
+          // 复制文件内容：走宿主读取，再写剪贴板。
+          // 浏览器直接 fetch(file://) 会被同源策略拦掉，只能让宿主读。
+          const copyContent = async (asMarkdown, language) => {
+            if (busy) return
+            setBusy(true)
+            setNote('')
+            try {
+              const text = await runCommand(
+                sessionIdOf(),
+                `/chat-file --path64=${encodeArg(menu.path)} --action=read`,
+              )
+              const body = String(text ?? '')
+              if (body.length === 0) throw new Error(t('noContent'))
+              const payload = asMarkdown === true
+                ? '```' + String(language ?? '') + '\n' + body.replace(/\n$/, '') + '\n```'
+                : body
+              await navigator.clipboard.writeText(payload)
+              setNote(t(asMarkdown === true ? 'copyAsMarkdownDone' : 'copyCodeDone'))
+              window.setTimeout(() => setMenu(null), 700)
+            } catch (failure) {
+              setNote(String(failure?.message ?? failure))
+            } finally {
+              setBusy(false)
+            }
+          }
+
+          const extractArchive = async () => {
+            if (busy) return
+            setBusy(true)
+            setNote('')
+            try {
+              const text = await runCommand(
+                sessionIdOf(),
+                `/chat-file --path64=${encodeArg(menu.path)} --action=extract`,
+              )
+              setNote(`${t('extractDone')}: ${String(text ?? '').trim()}`)
+              window.setTimeout(() => setMenu(null), 1100)
+            } catch (failure) {
+              setNote(String(failure?.message ?? failure))
+            } finally {
+              setBusy(false)
+            }
+          }
+
+          const showInfo = async () => {
+            if (busy) return
+            setBusy(true)
+            setNote('')
+            try {
+              const text = await runCommand(
+                sessionIdOf(),
+                `/chat-file --path64=${encodeArg(menu.path)} --action=info`,
+              )
+              const info = JSON.parse(String(text ?? '{}'))
+              const kb = Number(info?.size ?? 0)
+              const sizeText = kb >= 1024 * 1024
+                ? `${(kb / 1024 / 1024).toFixed(1)} MB`
+                : kb >= 1024 ? `${(kb / 1024).toFixed(1)} KB` : `${kb} B`
+              const when = info?.modifiedAt === undefined
+                ? ''
+                : new Date(Number(info.modifiedAt)).toLocaleString()
+              setNote(`${t('fileSize')}: ${sizeText}    ${t('modifiedAt')}: ${when}`)
+            } catch (failure) {
+              setNote(String(failure?.message ?? failure))
+            } finally {
+              setBusy(false)
+            }
+          }
+
           const item = (label, onClick) => h('button', {
             type: 'button',
             role: 'menuitem',
@@ -1664,17 +2162,56 @@ window.__ModuleLoader__.load({
             }
           })()
 
+          /**
+           * 按文件类型决定菜单内容。
+           *
+           * 设计取舍：**通用项永远在**（打开 / 定位 / 复制路径 / 重命名 / 回收站），
+           * 类型专属项插在中间。这样用户不用记"这个文件有没有那一项"，
+           * 肌肉记忆始终成立；同时高频的类型操作又不用翻两层菜单。
+           */
+          const kind = kindOf(menu.path)
+          const ext = (() => {
+            const name = String(menu.path).split(/[\\/]/).pop() ?? ''
+            const dot = name.lastIndexOf('.')
+            return dot > 0 ? name.slice(dot + 1).toLowerCase() : ''
+          })()
+
+          const typeItems = []
+          if (kind === 'image') {
+            typeItems.push(item(t('showInfo'), showInfo))
+          } else if (kind === 'code') {
+            typeItems.push(item(t('copyCode'), () => copyContent(false)))
+            typeItems.push(item(t('copyAsMarkdown'), () => copyContent(true, ext)))
+            typeItems.push(item(t('showInfo'), showInfo))
+          } else if (kind === 'doc') {
+            typeItems.push(item(t('copyContent'), () => copyContent(false)))
+            typeItems.push(item(t('showInfo'), showInfo))
+          } else if (kind === 'archive') {
+            typeItems.push(item(t('extractHere'), extractArchive))
+            typeItems.push(item(t('showInfo'), showInfo))
+          } else if (kind === 'media') {
+            typeItems.push(item(t('showInfo'), showInfo))
+          } else if (kind === 'binary') {
+            // 可执行文件只给「定位」和「信息」，不给任何"运行"入口 —— 见下方说明
+            typeItems.push(item(t('showInfo'), showInfo))
+          } else {
+            typeItems.push(item(t('showInfo'), showInfo))
+          }
+
           return h('div', {
             ref: boxRef,
             role: 'menu',
             className: 'cm-ctxmenu',
             'data-cm-scheme': scheme,
+            'data-cm-kind': kind,
             style: { left: `${x}px`, top: `${y}px` },
             onContextMenu: (event) => event.preventDefault(),
           },
           h('div', { className: 'cm-path', title: menu.path }, menu.path),
+          h('div', { className: 'cm-group' }, t(KIND_LABEL[kind] ?? 'kindOther')),
           item(t('openFile'), () => act({})),
           item(t('openFolder'), () => act({ action: 'reveal' })),
+          ...typeItems,
           item(t('openTerminal'), openTerminal),
           item(t('copyPath'), copyPath),
           item(t('copyRef'), copyReference),

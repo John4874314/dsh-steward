@@ -5,8 +5,8 @@
 [![DSH](https://img.shields.io/badge/DSH-0.2.1--rc.1%2B-4d6bfe)](https://github.com/deepseek-ai/deepseek-harness)
 
 > A conversation steward for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness):
-> one folder per conversation, a **recoverable** delete, right-click file actions, and a
-> three-rule safety baseline written into the global `AGENTS.md`.
+> one folder per conversation, a **recoverable** delete, type-aware right-click file actions,
+> a right-click menu for links, and a three-rule safety baseline written into the global `AGENTS.md`.
 
 🌏 [中文](./README.md) · **English**
 
@@ -18,10 +18,28 @@ DSH keeps conversations in the sidebar, but:
 
 - **You cannot tell which files belong to which conversation** — there is no "one folder per conversation" notion.
 - **Deleting a conversation is irreversible** — one slip and the record is gone.
-- **File cards in a conversation can only be clicked, not right-clicked** for "open folder / copy path / save as".
+- **File cards in a conversation can only be clicked, not right-clicked** for "open folder / copy path / save as" —
+  and there is no way to give images, code and archives different actions.
+- **Links can only be clicked** — you cannot open one in a different browser, copy just the URL, or copy it as a Markdown link.
 - **There is no single place to make the agent follow the same safety baseline** — you end up writing one `AGENTS.md` per workspace.
 
-This plugin does all four, in **one bundle, one switch, one settings page**.
+This plugin does all five, in **one bundle, one switch, one settings page**.
+
+## Changelog
+
+### 1.1.0
+
+- **File context menu grouped by type**: code / document / archive / image / media / executable / other,
+  each with its own actions (copy code, extract here, copy file contents, file information…).
+- **Link context menu**: open in default browser, open in another browser, copy URL, copy as Markdown link.
+- **Links with embedded credentials are no longer silently ignored**: the menu still opens, the password is
+  masked, and a confirmation dialog appears before opening.
+- Right-click now also works in the **right-hand file tree**, not just deliverable cards and review rows.
+
+### 1.0.0
+
+First release: conversation folders, recoverable delete, batch delete, file context menu, guardrails,
+backup management, checkup.
 
 ## Install
 
@@ -102,9 +120,25 @@ no dead button.
 Each id goes through the same delete path; everything lands in the trash, and you get
 per-id success/failure detail.
 
-#### File context menu
+#### File context menu (grouped by type)
 
-**Right-click** a file card in a conversation (or `Shift+F10` / the menu key):
+**Right-click** a file card in a conversation, a row in the right-hand review list, or an entry in the
+right-hand file tree (or `Shift+F10` / the menu key).
+
+The menu identifies the file type first, then decides which actions to show. Common actions are always
+present; type-specific ones sit in the middle.
+
+| Type | Detected by | Type-specific actions |
+| --- | --- | --- |
+| **Code** | `.js .ts .py .go .rs .java .c .cpp .cs .php .sh .ps1 .sql .html .css .json .yaml …` | Copy code, copy as Markdown code block (with language tag) |
+| **Document** | `.md .txt .pdf .docx .xlsx .pptx .csv .epub …` | Copy file contents |
+| **Archive** | `.zip .7z .rar .tar .gz .tgz .bz2 .xz .zst …` | Extract here (refuses if the target folder exists; never overwrites) |
+| **Image** | `.png .jpg .gif .webp .svg .bmp .ico .avif …` | File information |
+| **Media** | `.mp4 .mkv .mov .mp3 .wav .flac .m4a …` | File information |
+| **Executable** | `.exe .msi .dll .so .dylib .bin .jar .wasm …` | File information only — **no "run" entry at all** |
+| **Other** | everything else | File information |
+
+Common actions:
 
 | Action | Notes |
 | --- | --- |
@@ -114,14 +148,48 @@ per-id success/failure detail.
 | Copy as reference | copies `@<path>` — paste into the composer to jump there |
 | Save as… | pick a directory, the host copies the file (auto-suffixes on collision) |
 | Rename… | rename in place, never overwrites an existing file |
+| File information | size + modified time |
 | Move to trash | into `$DSH_HOME/trash/`, recoverable |
 
 The look is liquid glass, coloured from `--dsw-alias-*` tokens, following light/dark automatically.
+The type label at the top of the menu is tinted per category (code blue, archive amber, executable red),
+so one glance tells you what kind of file this is.
+
+> **Why executables get no "run" action**: the paths in this menu come from conversation content, which is
+> model-influenced input. A "run" button would be a silent arbitrary-code-execution entry point, and the
+> upside is far smaller than the risk.
 
 > Open / Open folder / Open with / Copy path / Copy as reference write no log.
-> Open in terminal / Save as / Rename / Move to trash must run on the host (via `/chat-file`),
-> so they leave one command record in the conversation — the unavoidable cost of a browser
-> that cannot write local files directly.
+> Open in terminal / Save as / Rename / Move to trash / Extract / Copy contents must run on the host
+> (via `/chat-file`), so they leave one command record in the conversation — the unavoidable cost of a
+> browser that cannot write local files directly.
+
+#### Link context menu
+
+**Right-click** any `http`/`https` link in a conversation to get a link-specific set of actions:
+
+| Action | Notes |
+| --- | --- |
+| Open in default browser | hands off to the OS default browser |
+| Open in another browser | lists browsers registered on this machine (`StartMenuInternet`), pick one |
+| Copy URL | copies the full original URL |
+| Copy as Markdown link | copies `[link text](URL)` |
+
+Only `http` and `https` are intercepted. `javascript:`, `data:` and `file:` fall through to the native
+menu and never reach the open path.
+
+**Links with embedded credentials** (`https://user:pass@host/`) are not silently ignored — that would make
+right-click do nothing at all, which looks broken. Instead the menu opens normally, but:
+
+- the URL at the top is masked: `https://user:***@host/`, so the password is never on screen
+- an amber warning line appears: `⚠ This link contains credentials`
+- clicking "Open in browser" shows **a confirmation dialog** explaining that the credentials will be sent
+  to the destination site
+- the copy actions still work, and they copy the **full original URL** (real password included) — copying
+  to the clipboard is your deliberate action and should not be rewritten
+
+Safety comes from "confirm before opening", not from "give you nothing". A silent failure teaches people
+to ignore anomalies; an explicit warning makes them actually read the address.
 
 ### 2. The guardrails (three rules)
 

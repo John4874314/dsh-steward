@@ -11,7 +11,7 @@
 
 - insert:
     - id: dsh-steward
-      name: 'dsh-steward'
+      name: '@local/dsh-steward'
       config:
         guardrails:
           install: true

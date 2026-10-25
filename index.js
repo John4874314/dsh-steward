@@ -17,7 +17,7 @@ import { join, resolve, sep, dirname, basename } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomBytes } from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
 
 /**
  * 尽力拿到 schemastery。
@@ -1101,17 +1101,104 @@ export function apply(ctx, config) {
     return typeof base === 'string' && base.length > 0 ? resolve(base, target) : target
   }
 
+  /**
+   * 只允许 http/https 的 URL 走浏览器通道。
+   *
+   * 为什么必须白名单：`javascript:`、`data:`、`file:` 这些协议被系统 shell 打开时
+   * 可能执行任意代码，而 URL 来自对话内容，是模型可以影响的输入。
+   */
+  function isSafeWebUrl(value) {
+    if (typeof value !== 'string' || value.length === 0) return false
+    let parsed
+    try {
+      parsed = new URL(value)
+    } catch {
+      return false
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+    // 带账号密码的 URL 会在地址栏里伪造可信来源，直接拒绝
+    if (parsed.username !== '' || parsed.password !== '') return false
+    return true
+  }
+
+  /**
+   * 列出这台机器上能处理 http/https 的浏览器。
+   *
+   * 为什么读注册表而不是问 Electron：浏览器不是"文件关联应用"，
+   * `workspacePathApplications` 只认文件扩展名，查不到浏览器。
+   *
+   * 全部包在 try 里：拿不到就返回空数组，菜单退化成"只在默认浏览器打开"。
+   */
+  async function listBrowsers() {
+    if (process.platform !== 'win32') return []
+    const run = (file, args) => new Promise((done) => {
+      try {
+        execFile(file, args, { windowsHide: true, timeout: 8000 }, (error, stdout) => {
+          done(error ? '' : String(stdout ?? ''))
+        })
+      } catch {
+        done('')
+      }
+    })
+
+    const script = [
+      '$ErrorActionPreference="SilentlyContinue"',
+      '$roots=@(',
+      '"HKLM:\\SOFTWARE\\Clients\\StartMenuInternet",',
+      '"HKLM:\\SOFTWARE\\WOW6432Node\\Clients\\StartMenuInternet",',
+      '"HKCU:\\SOFTWARE\\Clients\\StartMenuInternet")',
+      '$out=@()',
+      'foreach($r in $roots){',
+      '  Get-ChildItem $r | ForEach-Object {',
+      '    $k=$_.PSChildName',
+      '    $cmd=(Get-ItemProperty "$($_.PSPath)\\shell\\open\\command")."(default)"',
+      '    if($cmd){ $out += [pscustomobject]@{ id=$k; name=$k; cmd=$cmd } }',
+      '  }',
+      '}',
+      'if($out.Count -eq 0){ "[]" } else { $out | ConvertTo-Json -Compress }',
+    ].join('; ')
+
+    const raw = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script])
+    if (raw.trim().length === 0) return []
+    let parsed
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return []
+    }
+    const rows = Array.isArray(parsed) ? parsed : [parsed]
+    const seen = new Set()
+    const list = []
+    for (const row of rows) {
+      const id = typeof row?.id === 'string' ? row.id : ''
+      const cmd = typeof row?.cmd === 'string' ? row.cmd : ''
+      if (id.length === 0 || cmd.length === 0 || seen.has(id)) continue
+      seen.add(id)
+      list.push({ id, name: id, command: cmd })
+    }
+    return list
+  }
+
   function parseFileArgs(rawInput) {
     const tokens = String(rawInput ?? '').trim().split(/\s+/).filter(Boolean)
     const options = {
       action: 'path', sessionId: undefined, seq: undefined, index: undefined,
       application: undefined, targetDir: undefined, path: undefined, newName: undefined,
+      url: undefined, browser: undefined,
     }
     for (const token of tokens) {
       if (token.startsWith('--session=')) options.sessionId = token.slice('--session='.length)
       else if (token.startsWith('--seq=')) options.seq = Number(token.slice('--seq='.length))
       else if (token.startsWith('--index=')) options.index = Number(token.slice('--index='.length))
       else if (token.startsWith('--application=')) options.application = token.slice('--application='.length)
+      else if (token.startsWith('--browser=')) options.browser = token.slice('--browser='.length)
+      else if (token.startsWith('--url64=')) {
+        try {
+          options.url = Buffer.from(token.slice('--url64='.length), 'base64').toString('utf8')
+        } catch {
+          options.url = undefined
+        }
+      }
       else if (token.startsWith('--target=')) options.targetDir = token.slice('--target='.length)
       else if (token.startsWith('--name64=')) {
         try {
@@ -1147,6 +1234,58 @@ export function apply(ctx, config) {
       description: '解析对话里交付物文件的真实路径，或对它执行打开 / 显示位置 / 查询可用应用。',
       handler: async (invocation) => {
         const options = parseFileArgs(invocation.rawInput)
+
+        /* ---- 网址动作：不涉及文件路径，必须在解析 path 之前分流 ---- */
+
+        // 列出浏览器：给右键菜单的「用其它浏览器打开」子菜单提供数据
+        if (options.action === 'browsers') {
+          try {
+            const browsers = await listBrowsers()
+            return { kind: 'success', text: JSON.stringify({ browsers }) }
+          } catch (error) {
+            return { kind: 'error', text: `读取浏览器列表失败：${error?.message ?? error}` }
+          }
+        }
+
+        // 用指定浏览器打开 URL。--browser 为空时交给系统默认浏览器。
+        if (options.action === 'open-url') {
+          if (!isSafeWebUrl(options.url)) {
+            return { kind: 'error', text: '只允许打开 http/https 网址' }
+          }
+          try {
+            if (typeof options.browser === 'string' && options.browser.length > 0) {
+              // 指定浏览器：先找到它的启动命令，再把 URL 作为参数拉起。
+              // 命令形如 `"C:\...\chrome.exe" --single-argument %1`，%1 是占位符。
+              const browsers = await listBrowsers()
+              const hit = browsers.find((one) => one.id === options.browser)
+              if (hit === undefined) return { kind: 'error', text: `没找到浏览器：${options.browser}` }
+              const match = /^\s*"([^"]+)"|^\s*(\S+)/.exec(hit.command)
+              const exe = match?.[1] ?? match?.[2]
+              if (exe === undefined || exe.length === 0) {
+                return { kind: 'error', text: `无法解析浏览器启动命令：${options.browser}` }
+              }
+              const child = spawn(exe, [options.url], { detached: true, stdio: 'ignore', windowsHide: false })
+              child.on('error', () => {})
+              child.unref()
+              return { kind: 'success', text: options.url }
+            }
+            if (process.platform === 'win32') {
+              const child = spawn('cmd.exe', ['/c', 'start', '', options.url], {
+                detached: true, stdio: 'ignore', windowsHide: true,
+              })
+              child.on('error', () => {})
+              child.unref()
+              return { kind: 'success', text: options.url }
+            }
+            const opener = process.platform === 'darwin' ? 'open' : 'xdg-open'
+            const child = spawn(opener, [options.url], { detached: true, stdio: 'ignore' })
+            child.on('error', () => {})
+            child.unref()
+            return { kind: 'success', text: options.url }
+          } catch (error) {
+            return { kind: 'error', text: `打开网址失败：${error?.message ?? error}` }
+          }
+        }
 
         let found
         if (typeof options.path === 'string' && options.path.length > 0) {
@@ -1268,6 +1407,70 @@ export function apply(ctx, config) {
             return { kind: 'success', text: target }
           } catch (error) {
             return { kind: 'error', text: `另存为失败：${error?.message ?? error}` }
+          }
+        }
+
+        // 文件信息：大小、修改时间、类型。给菜单顶部的说明行用。
+        if (options.action === 'info') {
+          try {
+            const info = await stat(found.path)
+            return {
+              kind: 'success',
+              text: JSON.stringify({
+                path: found.path,
+                size: info.size,
+                isDirectory: info.isDirectory(),
+                modifiedAt: info.mtimeMs,
+              }),
+            }
+          } catch (error) {
+            return { kind: 'error', text: `读取文件信息失败：${error?.message ?? error}` }
+          }
+        }
+
+        // 读文本内容：只读，且限制大小，避免把几百 MB 的文件读进内存再塞回消息通道。
+        if (options.action === 'read') {
+          const MAX_BYTES = 512 * 1024
+          try {
+            const info = await stat(found.path)
+            if (!info.isFile()) return { kind: 'error', text: '这个条目不是文件' }
+            if (info.size > MAX_BYTES) {
+              return { kind: 'error', text: `文件太大（${Math.round(info.size / 1024)} KB），超过 512 KB 上限` }
+            }
+            const text = await readFile(found.path, 'utf8')
+            return { kind: 'success', text }
+          } catch (error) {
+            return { kind: 'error', text: `读取文件失败：${error?.message ?? error}` }
+          }
+        }
+
+        // 解压：用系统自带的 bsdtar（libarchive），原生支持 zip / tar 等格式，不引入第三方依赖。
+        // 解到与压缩包同名的目录，已存在就拒绝，避免覆盖用户文件。
+        if (options.action === 'extract') {
+          const info = await stat(found.path).catch(() => undefined)
+          if (info === undefined || !info.isFile()) return { kind: 'error', text: '这个条目不是文件，无法解压' }
+          const dir = dirname(found.path)
+          const stem = basename(found.path).replace(/\.(zip|7z|tar|tgz|tar\.gz|tar\.bz2|tar\.xz|gz|bz2|xz|rar)$/i, '')
+          const target = resolve(dir, stem.length > 0 ? stem : 'extracted')
+          if (target === resolve(found.path)) return { kind: 'error', text: '解压目标不能是压缩包自己' }
+          if (await exists(target)) return { kind: 'error', text: `目标目录已存在：${target}` }
+          try {
+            await mkdir(target, { recursive: true })
+            const code = await new Promise((done) => {
+              const child = spawn('tar.exe', ['-xf', found.path, '-C', target], {
+                windowsHide: true, stdio: 'ignore',
+              })
+              child.on('error', () => done(-1))
+              child.on('exit', (exitCode) => done(exitCode ?? -1))
+            })
+            if (code !== 0) {
+              await rm(target, { recursive: true, force: true }).catch(() => {})
+              return { kind: 'error', text: `解压失败（tar 退出码 ${code}）` }
+            }
+            return { kind: 'success', text: target }
+          } catch (error) {
+            await rm(target, { recursive: true, force: true }).catch(() => {})
+            return { kind: 'error', text: `解压失败：${error?.message ?? error}` }
           }
         }
 
