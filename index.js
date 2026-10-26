@@ -99,6 +99,14 @@ export const Config = Schema === undefined
       install: Schema.boolean().default(true)
         .description('把「运行三原则」写进 /AGENTS.md（对所有工作区生效）'),
     }).description('运行守则').volatile(),
+    sessionLog: Schema.object({
+      enabled: Schema.boolean().default(true)
+        .description('把该对话的完整日志导出成可读的「交接日志.md」放进对话文件夹'),
+      maxMessages: Schema.number().step(1).min(0).default(400)
+        .description('最多导出多少条消息（0 = 不限制）。超出时保留最近的'),
+      includeTools: Schema.boolean().default(true)
+        .description('日志里是否包含工具调用与结果'),
+    }).description('交接日志').volatile(),
   })
 
 const DEFAULTS = {
@@ -108,6 +116,11 @@ const DEFAULTS = {
     trigger: 'first-message',
     template: 'chat-{date}-{time}',
     useAsWorkingDirectory: false,
+  },
+  sessionLog: {
+    enabled: true,
+    maxMessages: 400,
+    includeTools: true,
   },
 }
 
@@ -126,6 +139,11 @@ function unwrap(value) {
 function folderConfig(config) {
   const folder = unwrap(config?.folder)
   return { ...DEFAULTS.folder, ...(folder ?? {}) }
+}
+
+function sessionLogConfig(config) {
+  const log = unwrap(config?.sessionLog)
+  return { ...DEFAULTS.sessionLog, ...(log ?? {}) }
 }
 
 function pad(value) {
@@ -462,9 +480,12 @@ export function apply(ctx, config) {
   const created = new Set()
   /** 会话 id → 本插件为它建好的绝对路径，删除对话时据此定位，避免猜测。 */
   const createdFolders = new Map()
+  /** 会话 id → 上次写交接日志的时间，用来做节流，避免每个事件都重写整份文档。 */
+  const logWritten = new Map()
   /** 设置页写入的覆盖值（文件里的），异步载入。 */
   let savedFolder = undefined
   let savedGuardrails = undefined
+  let savedSessionLog = undefined
 
   // 异步载入持久登记表与用户设置；载入完成前的删除请求会走显式路径
   /**
@@ -484,6 +505,7 @@ export function apply(ctx, config) {
     if (saved !== null && typeof saved === 'object') {
       if (saved.folder !== undefined) savedFolder = saved.folder
       if (saved.guardrails !== undefined) savedGuardrails = saved.guardrails
+      if (saved.sessionLog !== undefined) savedSessionLog = saved.sessionLog
     }
   })
 
@@ -492,6 +514,12 @@ export function apply(ctx, config) {
     const fromConfig = folderConfig(config)
     // 配置文件优先（用户在设置页打开/关闭过），没有就用 patch/schema 的声明值
     return { ...fromConfig, ...(savedFolder ?? {}) }
+  }
+
+  /** 交接日志的生效配置，同样每次现读。 */
+  function currentSessionLog() {
+    const fromConfig = sessionLogConfig(config)
+    return { ...fromConfig, ...(savedSessionLog ?? {}) }
   }
 
   /** 弱取一个宿主服务：未注入时 ctx.xxx 会直接抛错，ctx.get 才是安全的探测方式。 */
@@ -549,7 +577,11 @@ export function apply(ctx, config) {
         await mkdir(known, { recursive: true })
       } catch (error) {
         ctxWarn(`dsh-steward: 无法补建 ${known}: ${error?.message ?? error}`)
+        return
       }
+      // 老会话的目录是上个版本建的，里面还没有交接日志；这里补一份，
+      // 否则升级后旧对话永远等不到它的第一份日志。
+      void writeSessionLog(id, known).catch(() => {})
       return
     }
 
@@ -581,6 +613,10 @@ export function apply(ctx, config) {
       return
     }
 
+    // 目录刚建好就落一份交接日志：哪怕用户马上走开，文件夹里也有东西可读，
+    // 不至于留下一个空目录让人猜"这里原本要放什么"。
+    void writeSessionLog(id, target).catch(() => {})
+
     if (folder.useAsWorkingDirectory === true) {
       const agents = service('agents')
       const workingDirectory = service('workingDirectory')
@@ -606,6 +642,48 @@ export function apply(ctx, config) {
     if (currentFolder().trigger === 'created') return
     if (event?.type !== 'user/message') return
     void ensureFolder(session)
+  })
+
+  /* ------------------------------------------------------------------ */
+  /* 一·六、交接日志的触发时机                                            */
+  /* ------------------------------------------------------------------ */
+
+  /** 写日志的最小间隔：一次轮次里可能有几十个事件，不能每个都重写整份文档。 */
+  const SESSION_LOG_MIN_GAP_MS = 4000
+
+  /**
+   * 在轮次结束时刷新交接日志。
+   *
+   * 为什么挂在 `turn/end` 而不是每条消息：交接文档是"整份重写"，
+   * 挂在每条消息上会让长对话的文件 IO 变得很重。一轮结束时写一次，
+   * 既保证文档始终反映最新状态，又把写入次数压到轮次量级。
+   */
+  async function refreshSessionLog(session) {
+    const cfg = currentSessionLog()
+    if (cfg.enabled !== true) return
+
+    const id = session?.id
+    if (id === undefined) return
+
+    await registryReady
+    const folderPath = createdFolders.get(id)
+    if (folderPath === undefined || folderPath.length === 0) return
+
+    // 节流：同一会话 4 秒内只写一次
+    const last = logWritten.get(id) ?? 0
+    if (Date.now() - last < SESSION_LOG_MIN_GAP_MS) return
+
+    await writeSessionLog(id, folderPath)
+  }
+
+  ctx.on('session/event', (session, event) => {
+    if (event?.type !== 'turn/end') return
+    void refreshSessionLog(session)
+  })
+
+  // 会话归档/结束时再补一次，保证"最后一条"不会因为节流被漏掉
+  ctx.on('session/end-seed', (session) => {
+    void refreshSessionLog(session)
   })
 
   /* ------------------------------------------------------------------ */
@@ -1008,15 +1086,17 @@ export function apply(ctx, config) {
         const raw = String(invocation.rawInput ?? '').trim()
         const saved = await readConfigFile()
 
-        // getall：给设置页一次拿走两项状态
+        // getall：给设置页一次拿走全部开关状态
         if (raw === 'getall') {
           const folder = { ...folderConfig(config), ...(saved.folder ?? {}) }
           const guard = (saved.guardrails ?? {}).install
+          const sessionLog = { ...sessionLogConfig(config), ...(saved.sessionLog ?? {}) }
           return {
             kind: 'success',
             text: JSON.stringify({
               folder: folder.enabled === true,
               guardrails: guard === undefined ? true : guard === true,
+              sessionLog: sessionLog.enabled === true,
             }),
           }
         }
@@ -1026,12 +1106,12 @@ export function apply(ctx, config) {
           return { kind: 'success', text: String(folder.enabled === true) }
         }
 
-        // folder.enabled=true|false  或  guardrails.enabled=true|false
-        const match = /^(folder|guardrails)\.enabled\s*=\s*(true|false)$/i.exec(raw)
+        // folder.enabled=true|false  guardrails.enabled=true|false  sessionLog.enabled=true|false
+        const match = /^(folder|guardrails|sessionLog)\.enabled\s*=\s*(true|false)$/i.exec(raw)
         if (match === null) {
           return {
             kind: 'error',
-            text: '用法：/chat-config get | getall | folder.enabled=true|false | guardrails.enabled=true|false',
+            text: '用法：/chat-config get | getall | folder.enabled=true|false | guardrails.enabled=true|false | sessionLog.enabled=true|false',
           }
         }
 
@@ -1039,11 +1119,14 @@ export function apply(ctx, config) {
         const value = match[2].toLowerCase() === 'true'
         const next = which === 'folder'
           ? { ...saved, folder: { ...(saved.folder ?? {}), enabled: value } }
-          : { ...saved, guardrails: { ...(saved.guardrails ?? {}), install: value } }
+          : which === 'guardrails'
+            ? { ...saved, guardrails: { ...(saved.guardrails ?? {}), install: value } }
+            : { ...saved, sessionLog: { ...(saved.sessionLog ?? {}), enabled: value } }
 
         await writeConfigFile(next)
         if (which === 'folder') savedFolder = next.folder
-        else savedGuardrails = next.guardrails
+        else if (which === 'guardrails') savedGuardrails = next.guardrails
+        else savedSessionLog = next.sessionLog
 
         // 打开守则时立刻写一遍，不必等下次启动
         if (which === 'guardrails' && value === true) {
@@ -1060,8 +1143,440 @@ export function apply(ctx, config) {
   }, 'dsh-steward: /chat-config')
 
   /* ------------------------------------------------------------------ */
+  /* 四·五、/chat-session-log：手动导出某个对话的交接日志                  */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * 为什么要有手动命令：自动导出只在「建目录时」和「轮次结束」触发，
+   * 而用户可能想把一个**历史对话**（早于本功能、或当时开关是关的）
+   * 也导出成交接文档。手动命令补的就是这个缺口。
+   */
+  ctx.effect(() => {
+    return ctx.commands.register({
+      name: 'chat-session-log',
+      description: '把某个对话的日志导出成「交接日志.md」，放进它的对话文件夹。',
+      handler: async (invocation) => {
+        const tokens = String(invocation.rawInput ?? '').trim().split(/\s+/).filter(Boolean)
+        let sessionId
+        let explicitFolder
+        let force = false
+        for (const token of tokens) {
+          if (token === '--force') force = true
+          else if (token.startsWith('--session=')) sessionId = token.slice('--session='.length)
+          else if (token.startsWith('--folder64=')) {
+            try {
+              explicitFolder = Buffer.from(token.slice('--folder64='.length), 'base64').toString('utf8')
+            } catch {
+              explicitFolder = undefined
+            }
+          } else if (token.startsWith('--folder=')) explicitFolder = token.slice('--folder='.length)
+        }
+
+        if (sessionId === undefined) return { kind: 'error', text: '缺少 --session=<会话 id>' }
+
+        await registryReady
+        const folderPath = resolveChatFolder(sessionId, explicitFolder)
+        if (folderPath === undefined) {
+          return { kind: 'error', text: '这个对话还没有自己的文件夹，先打开「每个新对话一个文件夹」或指定 --folder=' }
+        }
+
+        const cfg = currentSessionLog()
+        if (cfg.enabled !== true && force !== true) {
+          return { kind: 'error', text: '交接日志开关是关的；加 --force 可强制导出一次' }
+        }
+
+        // 手动导出时绕过节流，用户点了就要立刻看到结果
+        logWritten.delete(sessionId)
+        await writeSessionLog(sessionId, folderPath)
+        const written = logWritten.get(sessionId)
+
+        if (written === undefined) {
+          return { kind: 'error', text: `导出失败，请查看插件日志（目标目录：${folderPath}）` }
+        }
+        return { kind: 'success', text: join(folderPath, '交接日志.md') }
+      },
+    })
+  }, 'dsh-steward: /chat-session-log')
+
+  /* ------------------------------------------------------------------ */
   /* 五、/chat-file：把交付物坐标解析成真实路径，并执行文件动作          */
   /* ------------------------------------------------------------------ */
+
+  /* ------------------------------------------------------------------ */
+  /* 一·五、交接日志：把会话日志导出成可读的 Markdown                     */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * 清掉混在用户消息里的系统注入内容。
+   *
+   * 为什么必须清：DSH 每轮都会把 `<system-reminder>`（内含 AGENTS.md 全文）
+   * 拼进用户消息。实测一份 1.2 万条事件的对话里，这类内容占了 **48%** 的篇幅，
+   * 而且同一份守则重复上千遍 —— 交接文档会从"能读"变成"没法读"。
+   * 这里只保留人真正说过的话。
+   */
+  function stripInjected(text) {
+    if (typeof text !== 'string' || text.length === 0) return ''
+    let out = text
+    // system-reminder 整块（含未闭合的残缺块）
+    out = out.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
+    out = out.replace(/<system-reminder>[\s\S]*$/gi, '')
+    // 有些版本用 guardrails / instructions 包裹
+    out = out.replace(/<!--\s*guardrails:begin[\s\S]*?guardrails:end\s*-->/gi, '')
+    out = out.replace(/<!--\s*dsh-steward:begin[\s\S]*?dsh-steward:end\s*-->/gi, '')
+    // 行内残留的标签
+    out = out.replace(/<\/?(?:system-reminder|instructions)>/gi, '')
+    return out.replace(/\n{3,}/g, '\n\n').trim()
+  }
+
+  /**
+   * 把 `data.content` 数组拍平成纯文本。
+   *
+   * 为什么不用现成的渲染：日志里可能混着文本、图片、文件引用、工具结果，
+   * 交接时人只想读文字。这里只挑 text 段，其余用一行占位符带过，
+   * 既保留"这里原本有什么"的信息，又不把 base64 之类塞进文档。
+   */
+  function flattenContent(content) {
+    if (typeof content === 'string') return stripInjected(content)
+    if (!Array.isArray(content)) return ''
+    const parts = []
+    for (const block of content) {
+      if (block === null || typeof block !== 'object') continue
+      if (block.type === 'text' && typeof block.text === 'string') {
+        parts.push(stripInjected(block.text))
+      } else if (block.type === 'image') {
+        parts.push('_[图片]_')
+      } else if (block.type === 'file' || block.type === 'attachment') {
+        const name = block.path ?? block.name ?? block.fileName
+        parts.push(`_[附件：${typeof name === 'string' ? name : '未命名'}]_`)
+      } else if (typeof block.text === 'string') {
+        // 兜底：有些块带 text 但 type 不叫 text
+        parts.push(stripInjected(block.text))
+      }
+    }
+    return parts.filter((p) => p.length > 0).join('\n').trim()
+  }
+
+  /** 把一条工具调用压成一行，避免日志被 JSON 淹没。 */
+  function describeToolCall(event) {
+    const data = event?.data ?? {}
+    const name = data.name ?? data.toolName ?? data.tool ?? '工具'
+    const callId = data.callId ?? data.id ?? ''
+    let args = data.arguments ?? data.args ?? data.input
+    if (typeof args === 'string') {
+      try { args = JSON.parse(args) } catch { /* 保持原样 */ }
+    }
+    let brief = ''
+    if (args !== null && typeof args === 'object') {
+      // 挑最像"在做什么"的字段，别把整个参数倒出来
+      const pick = args.path ?? args.file_path ?? args.command ?? args.query ?? args.pattern ?? args.url
+      if (typeof pick === 'string') brief = pick.length > 160 ? pick.slice(0, 160) + '…' : pick
+      else {
+        const json = JSON.stringify(args)
+        brief = json.length > 160 ? json.slice(0, 160) + '…' : json
+      }
+    } else if (typeof args === 'string') {
+      brief = args.length > 160 ? args.slice(0, 160) + '…' : args
+    }
+    // 多行命令/JSON 压成一行：日志里一条工具只占一行，否则 markdown 列表会被撑散
+    brief = brief.replace(/\s+/g, ' ').trim()
+    return { name: String(name), callId: String(callId), brief }
+  }
+
+  /**
+   * 工具结果压成一行：成功/失败 + 前若干字符。
+   *
+   * 注意：会话日志里的 tool/result 不是平铺的，真实形状是
+   *   { data: { turn, step, message: { role:'tool', toolCallId, source:{callId},
+   *            content:[{type:'text',text}], isError } } }
+   * 所以 callId / isError / 正文都得从 data.message 里取，
+   * 只读 data.callId 会全部落空（表现为日志里每条工具都写"未返回"）。
+   */
+  function describeToolResult(event) {
+    const data = event?.data ?? {}
+    const message = data.message ?? {}
+    const callId = String(
+      message.toolCallId ?? message.source?.callId ?? data.callId ?? data.id ?? '',
+    )
+    const failed = message.isError === true || data.isError === true
+      || message.error !== undefined || data.error !== undefined
+    let text = ''
+    if (Array.isArray(message.content)) text = flattenContent(message.content)
+    else if (typeof message.content === 'string') text = message.content
+    else if (typeof data.result === 'string') text = data.result
+    else if (typeof data.output === 'string') text = data.output
+    else if (typeof data.text === 'string') text = data.text
+    else if (Array.isArray(data.content)) text = flattenContent(data.content)
+    else if (data.result !== undefined) {
+      try { text = JSON.stringify(data.result) } catch { text = '' }
+    }
+    const err = message.error ?? data.error
+    if (typeof err === 'string') text = err
+    else if (err !== undefined && text.length === 0) {
+      try { text = JSON.stringify(err) } catch { text = '' }
+    }
+    const flat = text.replace(/\s+/g, ' ').trim()
+    return {
+      callId,
+      failed,
+      brief: flat.length > 200 ? flat.slice(0, 200) + '…' : flat,
+    }
+  }
+
+  function formatClock(ms) {
+    const n = Number(ms)
+    if (!Number.isFinite(n) || n <= 0) return ''
+    try {
+      return new Date(n).toLocaleString('zh-CN', { hour12: false })
+    } catch {
+      return ''
+    }
+  }
+
+  /**
+   * 单条消息的字符上限。
+   *
+   * 为什么要截：长对话里单条助手回复可能上万字（含大段代码），
+   * 全量保留会让交接文档膨胀到几 MB，反而没人读。
+   * 交接需要的是"这段在讲什么"，不是逐字复现 —— 超长时保留头尾。
+   */
+  const MESSAGE_CHAR_LIMIT = 4000
+
+  function clipMessage(text, limit) {
+    const max = Number.isFinite(limit) && limit > 0 ? limit : MESSAGE_CHAR_LIMIT
+    if (typeof text !== 'string') return ''
+    if (text.length <= max) return text
+    // 头尾各留一半：开头交代意图，结尾常有结论
+    const half = Math.floor((max - 60) / 2)
+    const omitted = text.length - half * 2
+    return `${text.slice(0, half)}\n\n_……（此处省略 ${omitted} 字）……_\n\n${text.slice(-half)}`
+  }
+
+  /**
+   * 把会话事件渲染成一份「交接日志.md」。
+   *
+   * 目标读者是**接手的人**（也可能是几天后的自己），所以：
+   *   - 开头给一段概览：会话 id、工作目录、模型、起止时间、消息数
+   *   - 正文按轮次推进：用户说了什么、助手回了什么、调了哪些工具
+   *   - 工具调用压成单行，避免正文被参数淹没
+   *   - 结尾附上本次会话产生的文件（交付物），交接时最需要这个
+   */
+  function renderSessionLog({ sessionId, title, events, meta, options }) {
+    const cfg = options ?? {}
+    const includeTools = cfg.includeTools !== false
+    const limit = Number.isFinite(cfg.maxMessages) ? cfg.maxMessages : 2000
+
+    const head = events.find((e) => e?.type === 'session')
+    const createdAt = head?.createdAt ?? meta?.createdAt
+    const cwd = head?.cwd ?? meta?.cwd ?? ''
+
+    // 收集消息（保持原有顺序），工具事件按 callId 挂到对应的调用上。
+    // 少数历史会话的 tool/result 不带 callId，这时按出现顺序兜底配对，
+    // 总比在日志里写一片"未返回"要好。
+    const rows = []
+    const toolResults = new Map()
+    const orphanResults = []
+    for (const event of events) {
+      if (event?.type === 'tool/result') {
+        const r = describeToolResult(event)
+        if (r.callId.length > 0) toolResults.set(r.callId, r)
+        else orphanResults.push(r)
+      }
+    }
+
+    for (const event of events) {
+      const type = event?.type
+      if (type === 'user/message') {
+        const text = flattenContent(event.data?.content ?? event.data?.message?.content)
+        if (text.length > 0) rows.push({ kind: 'user', time: event.time, text })
+      } else if (type === 'assistant/message') {
+        const message = event.data?.message ?? event.data
+        const text = flattenContent(message?.content)
+        const model = message?.source?.model ?? event.data?.model
+        if (text.length > 0) rows.push({ kind: 'assistant', time: event.time, text, model })
+      } else if (type === 'tool/call' && includeTools) {
+        const call = describeToolCall(event)
+        const result = toolResults.get(call.callId) ?? orphanResults.shift()
+        rows.push({ kind: 'tool', time: event.time, call, result })
+      } else if (type === 'compaction/summary') {
+        const text = flattenContent(event.data?.content ?? event.data?.summary)
+        if (text.length > 0) rows.push({ kind: 'note', time: event.time, text: `（上下文已压缩）\n${text}` })
+      } else if (type === 'deliverables/presented') {
+        const files = Array.isArray(event.data?.files) ? event.data.files
+          : Array.isArray(event.data?.presented) ? event.data.presented : []
+        for (const f of files) {
+          if (typeof f?.path === 'string') rows.push({ kind: 'file', time: event.time, path: f.path, description: f.description })
+        }
+      }
+    }
+
+    // 超限时保留最近的 N 条消息（工具行不占额度，否则长任务会把对话挤掉）
+    let kept = rows
+    let dropped = 0
+    if (limit > 0) {
+      const talk = rows.filter((r) => r.kind === 'user' || r.kind === 'assistant')
+      if (talk.length > limit) {
+        const cutoff = talk[talk.length - limit]
+        const at = rows.indexOf(cutoff)
+        dropped = talk.length - limit
+        kept = rows.slice(at)
+      }
+    }
+
+    const lines = []
+    lines.push(`# 交接日志 · ${title ?? sessionId}`)
+    lines.push('')
+    lines.push('> 本文件由 dsh-steward 自动生成，随对话推进而更新。')
+    lines.push('> 用途：把当前对话的任务状态交给别人（或未来的自己）接手。')
+    lines.push('')
+    lines.push('## 概览')
+    lines.push('')
+    lines.push('| 项目 | 值 |')
+    lines.push('| --- | --- |')
+    lines.push(`| 会话 ID | \`${sessionId}\` |`)
+    if (typeof title === 'string' && title.length > 0) lines.push(`| 标题 | ${title} |`)
+    lines.push(`| 工作目录 | \`${cwd}\` |`)
+    if (createdAt !== undefined) lines.push(`| 创建时间 | ${formatClock(createdAt)} |`)
+    lines.push(`| 导出时间 | ${formatClock(Date.now())} |`)
+    const userCount = rows.filter((r) => r.kind === 'user').length
+    const assistantCount = rows.filter((r) => r.kind === 'assistant').length
+    const toolCount = rows.filter((r) => r.kind === 'tool').length
+    lines.push(`| 消息数 | 用户 ${userCount} / 助手 ${assistantCount}${includeTools ? ` / 工具 ${toolCount}` : ''} |`)
+    if (dropped > 0) lines.push(`| 已省略 | 较早的 ${dropped} 条消息（超出上限 ${limit}） |`)
+    lines.push('')
+
+    // 交付物单独列一节：交接时最需要知道"这次产出了什么"
+    const produced = rows.filter((r) => r.kind === 'file')
+    if (produced.length > 0) {
+      lines.push('## 产出的文件')
+      lines.push('')
+      const seen = new Set()
+      for (const f of produced) {
+        if (seen.has(f.path)) continue
+        seen.add(f.path)
+        const desc = typeof f.description === 'string' && f.description.length > 0 ? ` — ${f.description}` : ''
+        lines.push(`- \`${f.path}\`${desc}`)
+      }
+      lines.push('')
+    }
+
+    lines.push('## 对话记录')
+    lines.push('')
+
+    let turn = 0
+    let clippedChars = 0
+    const clip = (text) => {
+      const out = clipMessage(text, MESSAGE_CHAR_LIMIT)
+      if (out.length < text.length) clippedChars += text.length - out.length
+      return out
+    }
+    for (const row of kept) {
+      if (row.kind === 'user') {
+        turn += 1
+        lines.push(`### ${turn}. 用户`)
+        lines.push('')
+        if (row.time !== undefined) lines.push(`_${formatClock(row.time)}_`)
+        lines.push('')
+        lines.push(clip(row.text))
+        lines.push('')
+      } else if (row.kind === 'assistant') {
+        lines.push('**助手**' + (typeof row.model === 'string' ? `（${row.model}）` : ''))
+        lines.push('')
+        lines.push(clip(row.text))
+        lines.push('')
+      } else if (row.kind === 'tool') {
+        const status = row.result === undefined ? '未返回' : row.result.failed ? '失败' : '完成'
+        const brief = row.call.brief.length > 0 ? ` · ${row.call.brief}` : ''
+        lines.push(`- \`${row.call.name}\` [${status}]${brief}`)
+        if (row.result !== undefined && row.result.brief.length > 0 && row.result.failed) {
+          lines.push(`  - 错误：${row.result.brief}`)
+        }
+      } else if (row.kind === 'note') {
+        lines.push('---')
+        lines.push('')
+        lines.push(row.text)
+        lines.push('')
+        lines.push('---')
+        lines.push('')
+      } else if (row.kind === 'file') {
+        lines.push(`- 产出：\`${row.path}\``)
+      }
+    }
+
+    if (kept.length === 0) {
+      lines.push('_（这个对话还没有可记录的内容）_')
+      lines.push('')
+    } else if (clippedChars > 0) {
+      lines.push('---')
+      lines.push('')
+      lines.push(`_部分消息过长已截断，共省略约 ${clippedChars} 字。完整原文见 \`$DSH_HOME/sessions/\`。_`)
+      lines.push('')
+    }
+
+    return lines.join('\n')
+  }
+
+  /**
+   * 把某个会话的日志写进它的对话文件夹。
+   *
+   * 为什么不做成"每次事件都追加"：会话日志是**多帧 zstd 压缩**的追加式文件，
+   * 增量解析容易和写入竞态。这里改成"整份重新生成、原子覆盖"，
+   * 每次轮次结束重写一次，代价可控、结果永远自洽。
+   */
+  async function writeSessionLog(sessionId, folderPath) {
+    const cfg = currentSessionLog()
+    if (cfg.enabled !== true) return
+    if (typeof folderPath !== 'string' || folderPath.length === 0) return
+
+    const controller = service('sessionController')
+    if (controller === undefined || typeof controller.inspect !== 'function') return
+
+    let inspection
+    try {
+      inspection = await controller.inspect(sessionId)
+    } catch (error) {
+      ctxWarn(`dsh-steward: 读取会话日志失败（${sessionId}）：${error?.message ?? error}`)
+      return
+    }
+    const events = Array.isArray(inspection?.events) ? inspection.events : []
+    if (events.length === 0) return
+
+    let title
+    try {
+      const session = service('sessions')?.get?.(sessionId)
+      title = service('sessionTitle')?.get?.(session)?.title
+    } catch {
+      title = undefined
+    }
+
+    let markdown
+    try {
+      markdown = renderSessionLog({
+        sessionId,
+        title,
+        events,
+        meta: inspection?.meta,
+        options: cfg,
+      })
+    } catch (error) {
+      ctxWarn(`dsh-steward: 生成交接日志失败（${sessionId}）：${error?.message ?? error}`)
+      return
+    }
+
+    const target = join(folderPath, '交接日志.md')
+    // 先写临时文件再改名：避免写到一半崩溃留下半截文档
+    const temp = `${target}.tmp`
+    try {
+      // 目录可能被人手动删掉，或 --folder= 指到一个还不存在的路径；
+      // 这里补一次 mkdir，否则 writeFile 直接 ENOENT，日志永远写不出来。
+      await mkdir(folderPath, { recursive: true })
+      await writeFile(temp, markdown, 'utf8')
+      await rename(temp, target)
+      logWritten.set(sessionId, Date.now())
+    } catch (error) {
+      ctxWarn(`dsh-steward: 写入交接日志失败（${target}）：${error?.message ?? error}`)
+      await rm(temp, { force: true }).catch(() => {})
+    }
+  }
 
   /**
    * 从会话事件里找出某个交付物文件。

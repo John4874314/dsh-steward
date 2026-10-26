@@ -44,6 +44,8 @@ window.__ModuleLoader__.load({
         groupGuardrails: '运行守则',
         toggleFolder: '每个新对话创建一个文件夹',
         toggleFolderHint: '在新对话的工作区目录下自动建一个独立文件夹',
+        toggleSessionLog: '在文件夹里写「交接日志.md」',
+        toggleSessionLogHint: '把当前对话的来龙去脉导出成一份文档，方便交接给下一个接手的人',
         toggleGuardrails: '启用运行三原则',
         toggleGuardrailsHint: '写进 AGENTS.md，对所有工作区生效；关掉后不再注入',
         on: '已开启',
@@ -197,6 +199,8 @@ window.__ModuleLoader__.load({
         groupGuardrails: 'Safety guardrails',
         toggleFolder: 'Create a folder for each new conversation',
         toggleFolderHint: 'Give each new conversation its own folder inside the workspace',
+        toggleSessionLog: 'Write a handover log into that folder',
+        toggleSessionLogHint: 'Export what this conversation did into one document the next person can pick up',
         toggleGuardrails: 'Enable the three-rule safety baseline',
         toggleGuardrailsHint: 'Written into AGENTS.md for every workspace; turning it off stops injecting it',
         on: 'On',
@@ -864,6 +868,7 @@ window.__ModuleLoader__.load({
 
         function ConversationPanel() {
           const [folderOn, setFolderOn] = useState(false)
+          const [sessionLogOn, setSessionLogOn] = useState(false)
           const [busy, setBusy] = useState('')
           const [error, setError] = useState('')
           const [loaded, setLoaded] = useState(false)
@@ -876,6 +881,7 @@ window.__ModuleLoader__.load({
                 const parsed = await callJson('/chat-config getall')
                 if (alive.current) {
                   setFolderOn(parsed.folder === true)
+                  setSessionLogOn(parsed.sessionLog === true)
                   setError('')
                 }
               } catch {
@@ -887,20 +893,36 @@ window.__ModuleLoader__.load({
             return () => { alive.current = false }
           }, [])
 
-          const toggle = async () => {
+          /**
+           * 两个开关共用一套乐观更新：先翻界面，失败再翻回来。
+           *
+           * 为什么要共用：写配置的命令只有一条，失败时的处理（回滚 + 报错）
+           * 完全一样；拆成两份容易改了一处漏一处。
+           */
+          const flip = async (which, previous, apply) => {
             if (busy !== '' || !loaded) return
-            setBusy('folder')
+            setBusy(which)
             setError('')
-            const previous = folderOn
-            setFolderOn(!previous)
+            apply(!previous)
             try {
-              await callJson(`/chat-config folder.enabled=${!previous ? 'true' : 'false'}`)
+              await callJson(`/chat-config ${which}.enabled=${!previous ? 'true' : 'false'}`)
             } catch {
-              if (alive.current) { setFolderOn(previous); setError(t('saveFailed')) }
+              if (alive.current) { apply(previous); setError(t('saveFailed')) }
             } finally {
               if (alive.current) setBusy('')
             }
           }
+
+          const toggleFolder = () => flip('folder', folderOn, setFolderOn)
+          const toggleSessionLog = () => flip('sessionLog', sessionLogOn, setSessionLogOn)
+
+          const switchOf = (label, value, onClick) => h('button', {
+            type: 'button', role: 'switch',
+            'aria-checked': value, 'aria-label': label,
+            disabled: busy !== '' || !loaded,
+            onClick,
+            style: S.sw(value, busy !== '' || !loaded),
+          }, h('span', { style: S.knob(value) }))
 
           return h('div', null,
             h('p', { style: S.hint }, t('hint')),
@@ -908,13 +930,16 @@ window.__ModuleLoader__.load({
               h('span', { style: S.rowText },
                 t('toggleFolder'),
                 h('span', { style: S.rowHint }, t('toggleFolderHint'))),
-              h('button', {
-                type: 'button', role: 'switch',
-                'aria-checked': folderOn, 'aria-label': t('toggleFolder'),
-                disabled: busy !== '' || !loaded,
-                onClick: toggle,
-                style: S.sw(folderOn, busy !== '' || !loaded),
-              }, h('span', { style: S.knob(folderOn) }))),
+              switchOf(t('toggleFolder'), folderOn, toggleFolder)),
+            // 交接日志是"文件夹里的东西"，文件夹关掉时它没有落脚点，
+            // 所以只在文件夹开启时显示，避免出现"开着却写不出来"的困惑。
+            folderOn
+              ? h('div', { style: S.row },
+                h('span', { style: S.rowText },
+                  t('toggleSessionLog'),
+                  h('span', { style: S.rowHint }, t('toggleSessionLogHint'))),
+                switchOf(t('toggleSessionLog'), sessionLogOn, toggleSessionLog))
+              : null,
             error.length > 0 ? h('div', { style: S.err }, error) : null)
         }
 

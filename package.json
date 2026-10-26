@@ -1,8 +1,8 @@
 {
   "name": "dsh-steward",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
-  "description": "Conversation steward for DeepSeek Harness: one folder per conversation, a recoverable Delete conversation row, type-aware right-click file actions, link actions that open in any installed browser, and the three-rule safety baseline written into the global AGENTS.md.",
+  "description": "Conversation steward for DeepSeek Harness: one folder per conversation, a recoverable Delete conversation row, an automatic handover log per conversation, type-aware right-click file actions, link actions that open in any installed browser, and the three-rule safety baseline written into the global AGENTS.md.",
   "keywords": [
     "dsh",
     "dsh-plugin",

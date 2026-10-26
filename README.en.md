@@ -27,6 +27,23 @@ This plugin does all five, in **one bundle, one switch, one settings page**.
 
 ## Changelog
 
+### 1.2.0
+
+- **Every conversation folder now gets a `交接日志.md` handover log**: an overview
+  (session id, working directory, start/end time, message counts), the files this
+  conversation produced, and the conversation itself in order — what the user asked,
+  what the assistant answered, which tools ran and whether they succeeded. Written so
+  the next person (or you, days later) can pick the task up.
+- Written when the folder is created, then at every turn end (throttled to one write
+  per 4 seconds per session). The whole document is regenerated and atomically replaced,
+  so a half-written file can never appear.
+- Strips the `<system-reminder>` block DSH injects into every user message — measured at
+  **48%** of raw event volume in a 12k-event conversation. Overlong messages keep their
+  head and tail with an explicit omitted-character count; the last 400 messages are kept.
+- New command `/chat-session-log --session=<id>` to export a log for an older conversation.
+- New toggle in the settings page under Conversation management (on by default, shown
+  only while the folder toggle is on).
+
 ### 1.1.0
 
 - **File context menu grouped by type**: code / document / archive / image / media / executable / other,
@@ -49,7 +66,7 @@ Replace `<profile>` with your profile name (usually `desktop` for the desktop ap
 ### Option 1 — tarball (recommended, no git needed)
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.0.0
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.2.0
 ```
 
 No local `git` required, and no direct `github.com:443` access required — it only
@@ -89,6 +106,43 @@ Settings → Steward → Conversation → "Create a folder for every new convers
 - Created on the **first message**, not on an empty session — no stray empty directories.
 - Subagents do not get one (they follow the parent); path escapes are refused; illegal characters become `-`.
 - The switch is instant; the config lives in `$DSH_HOME/chat-manager-config.json`.
+
+#### An automatic `交接日志.md` handover log (on by default)
+
+Settings → Steward → Conversation → "Write a handover log into that folder".
+This toggle only appears while the folder toggle is on — without a folder there is nowhere to put it.
+
+Each conversation's own folder gains a `交接日志.md`, meant to **hand the task to someone else
+(or to yourself, days later)**:
+
+| Section | Contents |
+| --- | --- |
+| Overview | session id, title, working directory, created/exported time, message counts, how much was omitted |
+| Files produced | deliverables presented in this conversation, one absolute path + description per line |
+| Conversation | in order: what the user said, what the assistant answered, which tools ran and whether they worked |
+
+Deliberate choices:
+
+- **When it writes**: once when the folder is created, then at every `turn/end` and
+  `session/end-seed` — throttled to one write per 4 seconds per session, so a long
+  conversation cannot flood the disk.
+- **How it writes**: the whole document is regenerated and written to `.tmp` then `rename`d,
+  an atomic replace — a half-written file can never be left behind.
+- **Why it is not a verbatim copy**: DSH appends a `<system-reminder>` block (containing the
+  full `AGENTS.md`) to every user message. Measured in a 12k-event conversation, that was
+  **48%** of the raw volume, with the same rules repeated over a thousand times. The log
+  strips those injected blocks and keeps only what a person actually said.
+- **Overlong messages are clipped**: 4000 characters per message by default, keeping the head
+  and tail and stating how many characters were dropped; at most the last 400 messages
+  (earlier ones are omitted wholesale, stated at the top).
+  The full original always stays in `$DSH_HOME/sessions/` — the log is a readable summary.
+
+To export a log for an **older conversation** (predating this feature, or created while the
+toggle was off):
+
+```
+/chat-session-log --session=<session id> [--force] [--folder=<path>]
+```
 
 #### Delete a conversation (recoverable)
 
@@ -215,7 +269,7 @@ The text is in [`AGENTS.guardrails.md`](./AGENTS.guardrails.md).
 
 | Tab | Contents |
 | --- | --- |
-| Conversation | the one-folder-per-conversation switch |
+| Conversation | the one-folder-per-conversation switch and the handover-log switch |
 | Trash | list / restore / delete for good / empty, with each entry's size |
 | Backups | backup directory location and size, **empty it** or **open the folder** — your call |
 | Guardrails | the switch, full text, a preview of the write result, restore from the built-in copy |
