@@ -1,16 +1,37 @@
 # dsh-steward · Conversation Steward
 
-[![npm](https://img.shields.io/npm/v/dsh-steward)](https://www.npmjs.com/package/dsh-steward)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+[![CI](https://github.com/John4874314/dsh-steward/actions/workflows/ci.yml/badge.svg)](https://github.com/John4874314/dsh-steward/actions/workflows/ci.yml)
 [![DSH](https://img.shields.io/badge/DSH-0.2.1--rc.1%2B-4d6bfe)](https://github.com/deepseek-ai/deepseek-harness)
 
 > A conversation steward for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness):
-> one folder per conversation, a **recoverable** delete, type-aware right-click file actions,
-> a right-click menu for links, and a three-rule safety baseline written into the global `AGENTS.md`.
+> one folder per conversation with an automatic **handover log**, a **recoverable** delete,
+> type-aware right-click file actions, a right-click menu for links, and a three-rule safety
+> baseline that you opt into explicitly before it touches the global `AGENTS.md`.
+
+> **Not published to npm.** There is no npm package, and the badges above carry no npm version —
+> install with the tarball command in "Install". `dsh plugin add dsh-steward` resolves nothing.
 
 🌏 [中文](./README.md) · **English**
 
 ---
+
+## Platform support
+
+Core features (conversation folders, handover log, delete, context menus, backups, checkup)
+work on **Windows, macOS and Linux**. A few items are **Windows-only** and are **hidden** on other
+systems rather than shown as dead menu entries:
+
+| Feature | Windows | macOS / Linux |
+| --- | --- | --- |
+| Folder per conversation, handover log | ✅ | ✅ |
+| Delete conversation (recoverable), batch delete | ✅ | ✅ |
+| File menu: open / copy path / save as / rename / move to trash | ✅ | ✅ |
+| File menu: **extract here** | ✅ via system `tar.exe` | ❌ hidden |
+| Link menu: **open in another browser** | ✅ reads `StartMenuInternet` | ❌ hidden (default browser only) |
+| File menu: **open in terminal** | ✅ | ❌ hidden |
+
+If you see an item that is **shown but does nothing** on a non-Windows system, that is a bug — please open an issue.
 
 ## What it fixes
 
@@ -26,6 +47,25 @@ DSH keeps conversations in the sidebar, but:
 This plugin does all five, in **one bundle, one switch, one settings page**.
 
 ## Changelog
+
+### 1.3.0
+
+**This fixes a release-blocking bug: 1.0.0 through 1.2.2 could not load when installed from a tarball or npm.**
+
+- **Fixed the `name` in `cordis.patch.yml`**: it said `@local/dsh-steward`, the local development
+  alias, while the real package name is `dsh-steward`. The host resolves modules by that `name`,
+  so installing produced `ERR_MODULE_NOT_FOUND: Cannot find package '@local/dsh-steward'` and the
+  whole plugin stayed inactive (`dsh: warning: 1 entry did not activate`). It slipped through
+  because locally the package happened to be installed under the `@local/` scope.
+- **`client.js` module id changed to `dsh-steward`** to match the package name.
+- **Guardrails now default to off.** Previously `guardrails.install: true` combined with a
+  `!== false` check meant `undefined` counted as enabled — installing the plugin wrote into the
+  global `AGENTS.md`. Now it only writes when you explicitly turn it on.
+- **Added a minimal test suite and CI.** `npm test` runs 6 assertions; the first one is
+  "package.json / patch insert / client module id must all agree". Verified that this test fails
+  if you put `@local/` back.
+- **Dropped the npm badge** (the package is not on npm, so the badge was false) and added the
+  platform support matrix.
 
 ### 1.2.0
 
@@ -66,7 +106,7 @@ Replace `<profile>` with your profile name (usually `desktop` for the desktop ap
 ### Option 1 — tarball (recommended, no git needed)
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.2.0
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.3.0
 ```
 
 No local `git` required, and no direct `github.com:443` access required — it only
@@ -91,9 +131,19 @@ hard-refresh (`Ctrl/Cmd + Shift + R`) will not pick up a new plugin.
 
 - DSH **0.2.1-rc.1** or newer (verified on `0.2.1-rc.3`)
 - Node ≥ 20
+- Installs on Windows, macOS and Linux; extract / browser picker / terminal are Windows-only
+  for now, see "Platform support" above.
 
-> Not published to npm yet. `dsh plugin add dsh-steward` will not resolve — use one of
-> the two options above.
+### Verify it yourself before trusting it
+
+Not trusting a third-party plugin that can delete conversations is reasonable. After installing:
+
+```sh
+git clone https://github.com/John4874314/dsh-steward && cd dsh-steward
+npm test          # 6 assertions, no dependencies to install
+```
+
+Or just run the plugin's own read-only checkup: Settings → Steward → Checkup. It reads only.
 
 ## Features
 
@@ -245,11 +295,14 @@ right-click do nothing at all, which looks broken. Instead the menu opens normal
 Safety comes from "confirm before opening", not from "give you nothing". A silent failure teaches people
 to ignore anomalies; an explicit warning makes them actually read the address.
 
-### 2. The guardrails (three rules)
+### 2. The guardrails (three rules) — **off by default, you turn it on**
 
-Settings → Steward → Guardrails → "Enable the three-rule baseline".
+> **Off by default.** Installing this plugin does **not** touch your `$DSH_HOME/AGENTS.md`.
+> To use the three rules, go to Settings → Steward → Guardrails → "Enable the three-rule baseline".
+> Only then does it write into the global file. Turning it off stops injecting; the block already
+> written stays in the file until you remove it.
 
-It writes three rules into **`$DSH_HOME/AGENTS.md`** (DSH's global instruction file), so
+Once on, it writes three rules into **`$DSH_HOME/AGENTS.md`** (DSH's global instruction file), so
 **every workspace and every new session** carries them, and a harness upgrade does not lose them:
 
 1. **Do not break DSH or the machine** — never touch the install directory, profile config,
@@ -263,7 +316,10 @@ The text is in [`AGENTS.guardrails.md`](./AGENTS.guardrails.md).
 
 > This bundle's patch **re-enables** `agent-instructions` (the web-app bundle disables it),
 > otherwise the rules would reach `AGENTS.md` but never the context. Side effect: a project's
-> own `AGENTS.md` / `CLAUDE.md` also enters the context.
+> own `AGENTS.md` / `CLAUDE.md` also enters the context. This part is independent of the toggle
+> above — it is bundle-level, active as soon as you install. If you want only the folder and
+> context-menu features and do not want the agent reading project `AGENTS.md` files at all,
+> delete the `agent-instructions` section from `cordis.patch.yml` before installing.
 
 ### 3. Five settings tabs
 
@@ -314,6 +370,38 @@ missing", never as a broken DSH**:
 Fault injection has been exercised: a missing `DSH_HOME`, a null `config`, missing
 dependencies, and a repeated `apply` all raise nothing.
 
+## On trust: what this plugin touches, and what it does not
+
+A third-party plugin that can delete conversations and write files should be questioned before
+it is trusted. Here is exactly what it does.
+
+**Files it writes** (all only after you enable the relevant toggle):
+
+| Path | When | Reversible |
+| --- | --- | --- |
+| `$DSH_HOME/chat-manager-config.json` | you flip a switch in settings | yes, it is just JSON |
+| conversation folder + its `交接日志.md` | after you enable "folder per conversation" | yes, delete them |
+| between `<!-- dsh-steward:begin/end -->` in `$DSH_HOME/AGENTS.md` | after you turn on "three rules" | yes, turn it off and remove that block |
+| `$DSH_HOME/backups/` | automatic backup before each `AGENTS.md` write | yes, one-click clear in settings |
+| `$DSH_HOME/trash/` | delete conversation / file **moves** content here | yes, restore from settings |
+
+**What it deliberately does not do**:
+
+- No network access. The plugin contains no `fetch` / `http` / `net` call and uploads nothing.
+- Does not read data outside `$DSH_HOME/sessions/`; it reads sessions only to build the handover
+  log, through DSH's official `sessionController.inspect()` channel, not by parsing disk.
+- Does not modify the DSH install directory, `cordis.yml` / `cordis.patch.yml`, or system settings.
+- Deletion always goes through the trash, never a direct `rm`; emptying the trash needs a second
+  confirmation.
+
+**Known rough edges** (stated here rather than hidden):
+
+- Single-file plugin: `index.js` ~2,600 lines, `client.js` ~2,400 lines, not split into modules.
+- Only 6 contract assertions, covering name consistency / defaults / module loading —
+  **UI interaction is not covered**.
+- Windows-first: three features are hidden on other platforms rather than reimplemented.
+- Not on npm; install from git or a tarball.
+
 ## Configuration
 
 The config file is `$DSH_HOME/chat-manager-config.json`:
@@ -327,7 +415,12 @@ The config file is `$DSH_HOME/chat-manager-config.json`:
     "useAsWorkingDirectory": false
   },
   "guardrails": {
-    "install": true
+    "install": false
+  },
+  "sessionLog": {
+    "enabled": true,
+    "maxMessages": 400,
+    "includeTools": true
   }
 }
 ```
@@ -338,9 +431,12 @@ The config file is `$DSH_HOME/chat-manager-config.json`:
 | `folder.trigger` | `first-message` | `first-message` or `session-start` |
 | `folder.template` | `chat-{date}-{time}` | supports `{date}` `{time}` `{title}` `{id}` |
 | `folder.useAsWorkingDirectory` | `false` | switch the conversation's cwd to the new folder |
-| `guardrails.install` | `true` | write the three rules into the global `AGENTS.md` |
+| `guardrails.install` | **`false`** | write the three rules into the global `AGENTS.md` |
+| `sessionLog.enabled` | `true` | write `交接日志.md` into the conversation folder |
+| `sessionLog.maxMessages` | `400` | how many messages to export (0 = unlimited, keeps the latest) |
+| `sessionLog.includeTools` | `true` | include tool calls and results in the log |
 
-> The settings page exposes only `folder.enabled` and `guardrails.install`;
+> The settings page exposes `folder.enabled`, `sessionLog.enabled` and `guardrails.install`;
 > the rest needs a hand edit of this JSON. Restart DSH afterwards.
 
 ## Uninstall

@@ -96,7 +96,8 @@ export const Config = Schema === undefined
         .description('同时把该会话的工作目录切到新建的文件夹'),
     }).description('对话文件夹').volatile(),
     guardrails: Schema.object({
-      install: Schema.boolean().default(true)
+      // 默认关闭：装一个插件就改写全局 AGENTS.md 是越权的，应由用户自己打开。
+      install: Schema.boolean().default(false)
         .description('把「运行三原则」写进 /AGENTS.md（对所有工作区生效）'),
     }).description('运行守则').volatile(),
     sessionLog: Schema.object({
@@ -110,7 +111,9 @@ export const Config = Schema === undefined
   })
 
 const DEFAULTS = {
-  guardrails: { install: true },
+  // 默认 **不** 写入全局 AGENTS.md。装个插件就改所有工作区的提示词属于越权，
+  // 想要三原则的人在设置页自己打开。
+  guardrails: { install: false },
   folder: {
     enabled: false,
     trigger: 'first-message',
@@ -469,7 +472,9 @@ export function apply(ctx, config) {
       // 等用户设置加载完再决定，避免和文件里的开关打架
       const saved = await readConfigFile().catch(() => ({}))
       const flag = (saved.guardrails ?? {}).install
-      const enabled = flag === undefined ? (config?.guardrails?.install !== false) : flag === true
+      // 只有**显式**为 true 才写。以前这里是 `!== false`，undefined 会被判成开启，
+      // 于是"默认关闭"根本不起作用 —— 装完就往全局 AGENTS.md 里塞东西。
+      const enabled = flag === true
       await installGuardrails(enabled)
     })().catch(() => {})
   } catch {
@@ -1095,7 +1100,8 @@ export function apply(ctx, config) {
             kind: 'success',
             text: JSON.stringify({
               folder: folder.enabled === true,
-              guardrails: guard === undefined ? true : guard === true,
+              // 默认关闭：只有用户显式打开过才是 true
+              guardrails: guard === true,
               sessionLog: sessionLog.enabled === true,
             }),
           }
@@ -2260,7 +2266,7 @@ export function apply(ctx, config) {
         id: 'config-file',
         status: 'ok',
         detail: `配置文件可读：folder.enabled=${(saved.folder ?? {}).enabled === true}，`
-          + `guardrails.install=${(saved.guardrails ?? {}).install !== false}`,
+          + `guardrails.install=${(saved.guardrails ?? {}).install === true}`,
       })
     } catch (error) {
       checks.push({ id: 'config-file', status: 'warn', detail: `配置文件读取失败：${error?.message ?? error}` })

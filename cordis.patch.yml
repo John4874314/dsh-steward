@@ -11,10 +11,15 @@
 
 - insert:
     - id: dsh-steward
-      name: '@local/dsh-steward'
+      # 这里必须是 package.json 的 name（真实包名），不是本地开发时的 @local/ 别名。
+      # 写成 @local/dsh-steward 时，从 tarball / npm 安装会 ERR_MODULE_NOT_FOUND，
+      # 插件整块加载失败 —— 这是 1.2.2 及以前发布版的真实故障点。
+      name: 'dsh-steward'
       config:
+        # 默认 **不** 改写全局 AGENTS.md。装一个插件就动所有工作区的提示词是越权的，
+        # 想要三原则的人去设置页自己打开。
         guardrails:
-          install: true
+          install: false
         folder:
           enabled: false
           trigger: first-message

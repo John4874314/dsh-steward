@@ -12,7 +12,9 @@
  */
 
 window.__ModuleLoader__.load({
-  id: '@local/dsh-steward',
+  // 必须与 package.json 的 name 一致。写成 @local/dsh-steward 时，
+  // 从 tarball / npm 安装的人拿到的模块 id 对不上，设置页与右键菜单都不会出现。
+  id: 'dsh-steward',
   factory(require) {
     const React = require('react')
     const h = React.createElement
