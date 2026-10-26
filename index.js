@@ -1225,6 +1225,16 @@ export function apply(ctx, config) {
     out = out.replace(/<!--\s*dsh-steward:begin[\s\S]*?dsh-steward:end\s*-->/gi, '')
     // 行内残留的标签
     out = out.replace(/<\/?(?:system-reminder|instructions)>/gi, '')
+    // 运行时快照：每次请求都会附一段 "Current runtime context..."（工作目录、沙箱策略、
+    // GUI 端口）。实测这类块永远独占一个 text block 且从该行开始，
+    // 所以只在**整块开头**命中时才整段丢弃 —— 万一用户真的在正文里提到这句话，不会被误删。
+    if (/^\s*Current runtime context\b/i.test(out)) return ''
+    // 同类注入：时间/时区补丁。它们和用户的话拼在同一个 block 里，
+    // 只能按行剔除（这些句子不可能出自用户之口）。
+    out = out
+      .replace(/^.*Time sampled while preparing turn\b.*$/gim, '')
+      .replace(/^.*Browser time zone for this request:.*$/gim, '')
+      .replace(/^.*Elapsed since the preceding (?:step context|model-visible message):.*$/gim, '')
     return out.replace(/\n{3,}/g, '\n\n').trim()
   }
 
