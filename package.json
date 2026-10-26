@@ -1,9 +1,32 @@
 {
   "name": "dsh-steward",
   "version": "1.3.1",
-  "private": true,
   "type": "module",
-  "description": "对话管家：给每个对话建独立文件夹、在「···」里删除对话（可选同步删文件夹）、文件右键菜单（打开文件夹 / 复制路径 / 另存为 / 打开方式），并把运行三原则写进全局 AGENTS.md。",
+  "description": "Conversation steward for DeepSeek Harness: one folder per conversation, a recoverable Delete conversation row, an automatic handover log per conversation, type-aware right-click file actions, link actions that open in any installed browser, and an opt-in three-rule safety baseline written into the global AGENTS.md.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "chat-manager",
+    "guardrails",
+    "context-menu",
+    "file-types"
+  ],
+  "os": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "license": "MIT",
+  "author": "John4874314",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/John4874314/dsh-steward.git"
+  },
+  "homepage": "https://github.com/John4874314/dsh-steward#readme",
+  "bugs": {
+    "url": "https://github.com/John4874314/dsh-steward/issues"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -18,8 +41,13 @@
     "AGENTS.guardrails.md",
     "locale/*.json",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "README.en.md",
+    "LICENSE"
   ],
+  "scripts": {
+    "test": "node --test test/contract.test.mjs"
+  },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4"
   },
@@ -27,7 +55,9 @@
     "@deepseek-ai/cordis": "^4.0.4"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,

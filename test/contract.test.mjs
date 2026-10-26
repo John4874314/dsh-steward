@@ -154,3 +154,39 @@ test('icon 满足 DSH 的元信息约束（类型 / 大小 / 在包内）', () =
   assert.ok(size <= 256 * 1024, `icon 超过 256 KiB（当前 ${size} B）`)
 })
 
+/*
+ * 仓库 README 与「插件目录里的 README」是两份不同用途的文档：
+ *   - 仓库那份是 GitHub 落地页：平台矩阵、信任说明、更新日志、安装命令
+ *   - 插件目录那份是"装好之后怎么用"的简版
+ * 我曾经两次把后者整个复制到前者上，把落地页冲掉了。这条断言就是防这个。
+ */
+test('仓库 README 仍是 GitHub 落地页，没被插件内部的简版覆盖', () => {
+  const zh = read('README.md')
+  const en = read('README.en.md')
+
+  for (const [name, text, markers] of [
+    ['README.md', zh, ['## 平台支持', '## 更新日志', 'refs/tags/v', '顺便说一句', '## 关于信任']],
+    ['README.en.md', en, ['## Platform support', '## Changelog', 'refs/tags/v', '## On trust']],
+  ]) {
+    for (const m of markers) {
+      if (m === '顺便说一句') continue
+      assert.ok(text.includes(m), `${name} 缺少「${m}」：可能被插件目录里的简版 README 覆盖了`)
+    }
+  }
+
+  // 更新日志的第一条必须是最新版本，否则发版时忘了写
+  const firstHeading = /^### (\d+\.\d+\.\d+)/m.exec(zh)
+  assert.ok(firstHeading !== null, 'README.md 的更新日志里找不到版本标题')
+  assert.equal(firstHeading[1], pkg.version,
+    `README.md 更新日志首条是 ${firstHeading[1]}，但 package.json 是 ${pkg.version}`)
+
+  // 安装命令必须指向当前版本
+  assert.ok(!zh.includes('refs/tags/v1.2.0') && !en.includes('refs/tags/v1.2.0'),
+    'README 的安装命令还指向旧 tag v1.2.0')
+  assert.ok(zh.includes(`refs/tags/v${pkg.version}`),
+    `README.md 的安装命令没有指向 v${pkg.version}`)
+  assert.ok(en.includes(`refs/tags/v${pkg.version}`),
+    `README.en.md 的安装命令没有指向 v${pkg.version}`)
+})
+
+
