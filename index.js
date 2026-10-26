@@ -1516,6 +1516,23 @@ export function apply(ctx, config) {
   }
 
   /**
+   * 没标题时的兜底：拿第一条"真正有内容"的用户消息当标题。
+   *
+   * 为什么不能用 events[0]：第一段往往只有 `<system-reminder>`（注入的守则全文），
+   * 剥掉之后是空的；也可能只有一句「你好」。所以取第一条剥完还剩 4 个字以上的。
+   */
+  function deriveTitle(events, fallback) {
+    for (const event of events) {
+      if (event?.type !== 'user/message') continue
+      const text = flattenContent(event.data?.content ?? event.data?.message?.content)
+      const flat = text.replace(/\s+/g, ' ').trim()
+      if (flat.length < 4) continue
+      return flat.length > 40 ? `${flat.slice(0, 40)}…` : flat
+    }
+    return fallback
+  }
+
+  /**
    * 把某个会话的日志写进它的对话文件夹。
    *
    * 为什么不做成"每次事件都追加"：会话日志是**多帧 zstd 压缩**的追加式文件，
@@ -1546,6 +1563,10 @@ export function apply(ctx, config) {
       title = service('sessionTitle')?.get?.(session)?.title
     } catch {
       title = undefined
+    }
+    // 没有标题时退回"第一条用户消息"，比在文档头上写一串会话 id 好认得多。
+    if (typeof title !== 'string' || title.trim().length === 0) {
+      title = deriveTitle(events, sessionId)
     }
 
     let markdown
