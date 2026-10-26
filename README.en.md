@@ -106,7 +106,7 @@ Replace `<profile>` with your profile name (usually `desktop` for the desktop ap
 ### Option 1 — tarball (recommended, no git needed)
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.3.0
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.3.1
 ```
 
 No local `git` required, and no direct `github.com:443` access required — it only

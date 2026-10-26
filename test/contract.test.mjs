@@ -13,9 +13,9 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, extname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -115,3 +115,42 @@ test('client.js 包在 __ModuleLoader__ 里，且 factory 能真正执行', () =
   })
   assert.equal(typeof out.apply, 'function', 'client factory 必须返回 apply')
 })
+
+/*
+ * 下面三条针对的是 1.3.0 → 1.3.1 的真实故障：
+ *
+ * 1.3.0 把 patch 和 client 的 id 改成了 dsh-steward，但本地 package.json 的 name
+ * 还是 @local/dsh-steward。DSH 的 assertPackageOwned 会从 icon 的真实路径向上找
+ * 一个 name 等于包名的 package.json，先找到的那个是 @local/... → 直接抛
+ *   "icon must remain inside its package directory"
+ * 整个插件被标记为「已关闭」。本地能跑、发布坏，反过来发布修好了本地又坏。
+ *
+ * 所以：包身份只有一个，任何一处不一致都要在发布前拦住。
+ */
+
+test('exports 必须导出 ./package.json（DSH 与工具链都靠它读清单）', () => {
+  assert.equal(pkg.exports?.['./package.json'], './package.json',
+    'exports 缺 "./package.json"：解析 <包名>/package.json 会 ERR_PACKAGE_PATH_NOT_EXPORTED')
+  assert.equal(pkg.exports?.['./icon'], './icon.svg',
+    'exports 缺 "./icon"：插件图标解析不到')
+  assert.equal(pkg.exports?.['./client'], './client.js',
+    'exports 缺 "./client"：浏览器半侧加载不到')
+})
+
+test('包名是裸名，不带 @scope/', () => {
+  assert.ok(!pkg.name.startsWith('@'),
+    `package.json 的 name 是 ${pkg.name}：本地开发用 @local/ 别名会让 icon 所有权校验失败`)
+})
+
+test('icon 满足 DSH 的元信息约束（类型 / 大小 / 在包内）', () => {
+  const iconPath = join(root, 'icon.svg')
+  assert.ok(existsSync(iconPath), 'icon.svg 不存在')
+
+  const media = { '.svg': true, '.png': true, '.jpg': true, '.jpeg': true, '.webp': true }
+  assert.ok(media[extname(iconPath).toLowerCase()] === true,
+    'icon 只支持 svg / png / jpg / jpeg / webp')
+
+  const size = statSync(iconPath).size
+  assert.ok(size <= 256 * 1024, `icon 超过 256 KiB（当前 ${size} B）`)
+})
+
