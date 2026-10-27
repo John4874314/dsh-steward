@@ -13,7 +13,7 @@
 import {
   mkdir, rm, stat, readdir, readFile, writeFile, copyFile, cp, rename, unlink,
 } from 'node:fs/promises'
-import { join, resolve, sep, dirname, basename } from 'node:path'
+import { join, resolve, sep, dirname, basename, isAbsolute } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomBytes } from 'node:crypto'
@@ -433,6 +433,176 @@ function openDirectory(path) {
   } catch {
     return false
   }
+}
+
+/**
+ * 用系统默认程序打开一个**文件**。
+ *
+ * Windows 上用 `rundll32 url.dll,FileProtocolHandler` 而不是 `cmd /c start`：
+ * 后者要把路径拼进命令行，路径里有 `&`、`^`、`(` 时会被 cmd 解释掉；
+ * rundll32 的路径是作为独立 argv 传的，不经过 shell 解析，才不会被文件名坑到。
+ */
+function openFile(path) {
+  const platform = process.platform
+  const argv = platform === 'win32'
+    ? ['rundll32.exe', ['url.dll,FileProtocolHandler', path]]
+    : platform === 'darwin'
+      ? ['open', [path]]
+      : ['xdg-open', [path]]
+  try {
+    const child = spawn(argv[0], argv[1], { detached: true, stdio: 'ignore', windowsHide: false })
+    child.on('error', () => {})
+    child.unref()
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 在文件管理器里**定位并选中**一个文件（Windows 是 explorer /select，macOS 是 open -R）。 */
+function revealFile(path) {
+  const platform = process.platform
+  const argv = platform === 'win32'
+    ? ['explorer.exe', [`/select,${path}`]]
+    : platform === 'darwin'
+      ? ['open', ['-R', path]]
+      : ['xdg-open', [dirname(path)]]
+  try {
+    const child = spawn(argv[0], argv[1], { detached: true, stdio: 'ignore', windowsHide: false })
+    child.on('error', () => {})
+    child.unref()
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 常见图片/文档 MIME → 扩展名。附件对象在磁盘上没有后缀，物化时要补一个。 */
+const MEDIA_EXT = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/svg+xml': '.svg',
+  'image/bmp': '.bmp',
+  'image/avif': '.avif',
+  'application/pdf': '.pdf',
+  'text/plain': '.txt',
+  'text/markdown': '.md',
+  'application/json': '.json',
+}
+
+/**
+ * 在 DSH 的附件库里找一个内容对象。
+ *
+ * 三处可能的落点（都按 sha256 内容寻址）：
+ *   - `attachments/v1/files/<p>/<digest>/<原文件名>`  ← 最理想，带原名和后缀
+ *   - `attachments/v1/file-objects/<p>/<digest>`     ← 通用文件的原始字节
+ *   - `attachments/v1/objects/<p>/<digest>`          ← 图片的原始字节（无后缀）
+ * 浏览器里显示的那张图可能是服务端转码过的「请求版」，
+ * 所以最后再去 `cache/attachments/request-images/` 兜一次。
+ */
+async function findAttachmentObject(sha) {
+  const home = process.env.DSH_HOME
+  if (typeof home !== 'string' || home.length === 0) return undefined
+  if (!/^[0-9a-f]{64}$/i.test(sha)) return undefined
+  const digest = sha.toLowerCase()
+  const prefix = digest.slice(0, 2)
+  const base = join(home, 'attachments', 'v1')
+
+  // 1) 带原文件名的硬链接目录（打开/在文件夹中显示都最友好）
+  const namedDir = join(base, 'files', prefix, digest)
+  try {
+    const names = await readdir(namedDir)
+    if (names.length > 0) {
+      const p = join(namedDir, names[0])
+      const info = await stat(p)
+      if (info.isFile()) return { path: p, hasExtension: true }
+    }
+  } catch {
+    // 没有这个目录就继续往下找
+  }
+
+  // 2) 通用文件对象 / 3) 图片对象（都没有后缀）
+  for (const p of [
+    join(base, 'file-objects', prefix, digest),
+    join(base, 'objects', prefix, digest),
+  ]) {
+    try {
+      const info = await stat(p)
+      if (info.isFile()) return { path: p, hasExtension: false }
+    } catch {
+      // 不是这里
+    }
+  }
+
+  // 4) 转码缓存：文件名规则不完全等于 digest，按包含关系兜一次（只扫一层）
+  const cacheDir = join(home, 'cache', 'attachments', 'request-images')
+  try {
+    for (const name of await readdir(cacheDir)) {
+      if (!name.includes(digest)) continue
+      const p = join(cacheDir, name)
+      const info = await stat(p)
+      if (info.isFile()) return { path: p, hasExtension: true }
+    }
+  } catch {
+    // 没这个缓存目录
+  }
+
+  return undefined
+}
+
+/**
+ * 把没有后缀的附件对象物化成「有名字、有后缀」的文件，好让系统能按类型打开。
+ *
+ * 为什么不直接打开对象本身：`attachments/v1/objects/68/6814...` 没有扩展名，
+ * Windows 不知道用什么程序打开它，只会弹「你想如何打开此文件」。
+ * 物化目录固定在插件自己的缓存下，重复打开复用同一份，不会越攒越多。
+ */
+async function materializeAttachment(source, name, mediaType) {
+  const home = process.env.DSH_HOME
+  if (typeof home !== 'string' || home.length === 0) return source
+  const dir = join(home, 'cache', 'dsh-steward', 'attachments', basename(dirname(source)))
+  let fileName = sanitize(String(name ?? '')).trim()
+  if (fileName.length === 0) fileName = 'attachment'
+  // 名字里已经没有后缀时，用 MIME 补一个
+  if (!/\.[A-Za-z0-9]{1,10}$/.test(fileName)) {
+    const ext = MEDIA_EXT[String(mediaType ?? '').toLowerCase()]
+    if (ext !== undefined) fileName += ext
+  }
+  const target = join(dir, fileName)
+  try {
+    const [a, b] = await Promise.all([stat(source), stat(target).catch(() => undefined)])
+    if (b !== undefined && b.size === a.size) return target
+    await mkdir(dir, { recursive: true })
+    await copyFile(source, target)
+    return target
+  } catch {
+    return source
+  }
+}
+
+/** 另存为：复制到目标目录，同名自动加序号，绝不覆盖用户已有文件。 */
+async function saveCopyTo(source, targetDir) {
+  const info = await stat(source)
+  if (!info.isFile()) throw new Error('这个条目不是文件，无法另存')
+  const name = basename(source)
+  let target = resolve(targetDir, name)
+  let counter = 1
+  while (true) {
+    try {
+      await stat(target)
+      const dot = name.lastIndexOf('.')
+      const base = dot > 0 ? name.slice(0, dot) : name
+      const ext = dot > 0 ? name.slice(dot) : ''
+      target = resolve(targetDir, `${base} (${counter})${ext}`)
+      counter += 1
+    } catch {
+      break
+    }
+  }
+  await copyFile(source, target)
+  return target
 }
 
 /** 插件自己的配置持久化文件（放在 $DSH_HOME，和会话记录分开）。 */
@@ -1203,6 +1373,156 @@ export function apply(ctx, config) {
       },
     })
   }, 'dsh-steward: /chat-session-log')
+
+  /* ------------------------------------------------------------------ */
+  /* 四·六、/chat-attachment：图片与附件的「打开 / 定位 / 另存为」        */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * 为什么需要这条命令：
+   *
+   * 对话里的图片是浏览器里的 blob: URL，文档是 DSH 附件库里的内容对象，
+   * 两者都没有「用户可见的磁盘路径」。浏览器又碰不到文件系统，
+   * 所以「打开图片 / 打开它所在的文件夹」必须由宿主来做。
+   *
+   * 传递方式上刻意**不传图片字节**：
+   * 命令会原样记进会话日志，把 80KB 的 base64 塞进去会污染对话、也慢。
+   * 改成客户端算 sha256（WebCrypto，64 个字符），宿主按内容寻址去附件库里找 —— 
+   * DSH 的附件按 sha256 存，哈希就是天然的主键。
+   */
+  ctx.effect(() => {
+    return ctx.commands.register({
+      name: 'chat-attachment',
+      description: '打开对话里的图片/附件，或定位它所在的文件夹。',
+      handler: async (invocation) => {
+        const tokens = String(invocation.rawInput ?? '').trim().split(/\s+/).filter(Boolean)
+        const options = { op: 'open', sha: undefined, path: undefined, name: undefined, media: undefined, targetDir: undefined, sessionId: undefined }
+        const decode = (v) => {
+          try {
+            return Buffer.from(v, 'base64').toString('utf8')
+          } catch {
+            return undefined
+          }
+        }
+        for (const token of tokens) {
+          if (token.startsWith('--op=')) options.op = token.slice(5).toLowerCase()
+          else if (token.startsWith('--sha=')) options.sha = token.slice(6).trim()
+          else if (token.startsWith('--path64=')) options.path = decode(token.slice(9))
+          else if (token.startsWith('--name64=')) options.name = decode(token.slice(9))
+          else if (token.startsWith('--media64=')) options.media = decode(token.slice(10))
+          else if (token.startsWith('--target64=')) options.targetDir = decode(token.slice(11))
+          else if (token.startsWith('--session=')) options.sessionId = token.slice(10)
+        }
+
+        if (!['open', 'reveal', 'saveas', 'probe'].includes(options.op)) {
+          return { kind: 'error', text: '用法：--op=open|reveal|saveas|probe，来源用 --sha=<sha256> 或 --path64=<base64 路径>' }
+        }
+
+        // 1) 定位来源
+        let source
+        if (typeof options.sha === 'string' && options.sha.length > 0) {
+          const found = await findAttachmentObject(options.sha)
+          if (found === undefined) {
+            return {
+              kind: 'error',
+              text: '在附件库里找不到这张图片（可能只是本地预览，还没随消息发出去）',
+            }
+          }
+          // 没有后缀的对象先物化，否则系统不知道用什么程序打开
+          source = found.hasExtension
+            ? found.path
+            : await materializeAttachment(found.path, options.name, options.media)
+        } else if (typeof options.path === 'string' && options.path.length > 0) {
+          let candidate = options.path.trim().replace(/^@/, '').replace(/^["']|["']$/g, '')
+          if (!isAbsolute(candidate)) {
+            const base = await sessionBaseDirectory(options.sessionId)
+            if (base === undefined) return { kind: 'error', text: '相对路径需要一个会话工作目录，请带上 --session=' }
+            candidate = resolve(base, candidate)
+          } else {
+            candidate = resolve(candidate)
+          }
+          try {
+            await stat(candidate)
+          } catch {
+            return { kind: 'error', text: `这个路径不存在：${candidate}` }
+          }
+          source = candidate
+        } else {
+          return { kind: 'error', text: '缺少来源：--sha=<sha256> 或 --path64=<base64 路径>' }
+        }
+
+        const info = await stat(source).catch(() => undefined)
+        if (info === undefined) return { kind: 'error', text: `读不到这个文件：${source}` }
+
+        if (options.op === 'probe') {
+          return {
+            kind: 'success',
+            text: JSON.stringify({
+              path: source,
+              isDirectory: info.isDirectory(),
+              size: info.size,
+            }),
+          }
+        }
+
+        if (options.op === 'saveas') {
+          if (typeof options.targetDir !== 'string' || options.targetDir.length === 0) {
+            return { kind: 'error', text: '缺少 --target64=<目标目录>' }
+          }
+          try {
+            return { kind: 'success', text: await saveCopyTo(source, options.targetDir) }
+          } catch (error) {
+            return { kind: 'error', text: `另存为失败：${error?.message ?? error}` }
+          }
+        }
+
+        if (options.op === 'reveal') {
+          if (info.isDirectory()) {
+            openDirectory(source)
+            return { kind: 'success', text: source }
+          }
+          revealFile(source)
+          return { kind: 'success', text: source }
+        }
+
+        // op=open
+        if (info.isDirectory()) {
+          openDirectory(source)
+          return { kind: 'success', text: source }
+        }
+        openFile(source)
+        return { kind: 'success', text: source }
+      },
+    })
+  }, 'dsh-steward: /chat-attachment')
+
+  /**
+   * 会话的工作目录：优先问 workingDirectory 服务，退到持久化 header。
+   * 相对路径（`docs/PRD.md`）要靠它拼成绝对路径。
+   */
+  async function sessionBaseDirectory(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return undefined
+    try {
+      const session = service('sessions')?.get?.(sessionId)
+      if (session !== undefined) {
+        const fromService = baseDirectory(session)
+        if (typeof fromService === 'string' && fromService.length > 0) return fromService
+      }
+    } catch {
+      // 落到会话头
+    }
+    try {
+      const controller = service('sessionController')
+      if (controller !== undefined && typeof controller.inspect === 'function') {
+        const inspection = await controller.inspect(sessionId)
+        const cwd = inspection?.meta?.cwd
+        if (typeof cwd === 'string' && cwd.length > 0) return cwd
+      }
+    } catch {
+      // 没辙了
+    }
+    return undefined
+  }
 
   /* ------------------------------------------------------------------ */
   /* 五、/chat-file：把交付物坐标解析成真实路径，并执行文件动作          */

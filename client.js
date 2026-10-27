@@ -125,6 +125,21 @@ window.__ModuleLoader__.load({
         tooLargeToCopy: '文件太大，无法复制内容',
         noContent: '读不到文件内容',
 
+        /* ---- 图片菜单 ---- */
+        imageGroup: '对话里的图片',
+        imageOpen: '打开图片',
+        imageReveal: '在文件夹中显示',
+        imageCopy: '复制图片',
+        imageCopyName: '复制文件名',
+        imageCopied: '已复制',
+        imageCopyFailed: '复制失败',
+        imageResolving: '正在定位原图…',
+        imageNoSource: '找不到原图（可能只是界面里的预览，还没随消息发出去）',
+        imageCopyNameDone: '已复制文件名',
+        pathGroup: '文件引用',
+        pickerUnavailable: '这个环境没有目录选择器，无法另存',
+        copyPathDone: '已复制路径',
+
         /* ---- 网址菜单 ---- */
         urlMenu: '网址',
         openInBrowser: '在默认浏览器打开',
@@ -277,6 +292,20 @@ window.__ModuleLoader__.load({
         modifiedAt: 'Modified',
         tooLargeToCopy: 'File is too large to copy',
         noContent: 'Could not read the file',
+
+        imageGroup: 'Image in this conversation',
+        imageOpen: 'Open image',
+        imageReveal: 'Show in folder',
+        imageCopy: 'Copy image',
+        imageCopyName: 'Copy file name',
+        imageCopied: 'Copied',
+        imageCopyFailed: 'Could not copy',
+        imageResolving: 'Locating the original…',
+        imageNoSource: 'Original not found (this may be a preview that was never sent)',
+        imageCopyNameDone: 'File name copied',
+        pathGroup: 'File reference',
+        pickerUnavailable: 'No directory picker in this environment; cannot save a copy',
+        copyPathDone: 'Path copied',
 
         urlMenu: 'Link',
         openInBrowser: 'Open in default browser',
@@ -1718,6 +1747,125 @@ window.__ModuleLoader__.load({
             return undefined
           }
 
+          /**
+           * 右键落在对话里的图片上时，取图片本身。
+           *
+           * 只用 `blob:` / `data:image/` 两种 src 判定：它们是「这段字节就在浏览器里」
+           * 的信号，能算出哈希去附件库找原图。`http(s):` 的图不做处理 —— 那是外链，
+           * 拿不到本地文件，弹菜单只会让人误以为能"打开本地文件"。
+           */
+          const imageOf = (target) => {
+            if (target === null || typeof target.closest !== 'function') return undefined
+            const img = target.tagName === 'IMG' ? target : target.closest('img')
+            if (img === null || img === undefined) return undefined
+            const src = String(img.currentSrc || img.getAttribute('src') || '')
+            if (!/^blob:/i.test(src) && !/^data:image\//i.test(src)) return undefined
+            const alt = String(img.getAttribute('alt') ?? '').trim()
+            const media = /^data:(image\/[a-z0-9.+-]+)/i.exec(src)
+            return {
+              src,
+              // alt 就是 DSH 存下来的原始文件名（MessageImage 用 attachment.file.name 填的）
+              name: alt.length > 0 ? alt : 'image.png',
+              mediaType: media === null ? undefined : media[1],
+            }
+          }
+
+          /** 缓存 src → sha256，同一张图重复右键不用重算。 */
+          const shaCache = new Map()
+          const shaOf = async (src) => {
+            if (shaCache.has(src)) return shaCache.get(src)
+            const promise = (async () => {
+              const response = await fetch(src)
+              const buffer = await response.arrayBuffer()
+              const digest = await crypto.subtle.digest('SHA-256', buffer)
+              const bytes = new Uint8Array(digest)
+              let hex = ''
+              for (const byte of bytes) hex += byte.toString(16).padStart(2, '0')
+              return hex
+            })()
+            shaCache.set(src, promise)
+            // 失败不要留下坏缓存，否则这张图永远打不开
+            promise.catch(() => shaCache.delete(src))
+            return promise
+          }
+
+          /**
+           * 从「右键位置所在的文字」里抠出一个像路径的片段。
+           *
+           * 为什么要限定在文字上：消息正文里到处都是路径（`@docs/PRD.md`、
+           * `E:\a\b.pdf`），但那不代表用户想右键它们。只在**指针真的落在**这段
+           * 文字上、且整段确实长得像路径时才认，避免满屏乱弹菜单。
+           */
+          const looksLikePath = (text) => {
+            const value = String(text ?? '').trim()
+            if (value.length < 3 || value.length > 400) return false
+            if (/[\r\n]/.test(value)) return false
+            return [
+              /^@?[A-Za-z]:[\\/]\S{1,390}$/,                       // C:\a\b.md、@C:\a\b.md
+              /^@?\.{1,2}[\\/]\S{1,390}$/,                          // ./a/b.md
+              /^@[^\s]*[\\/][^\s]*\.[A-Za-z0-9]{1,10}$/,             // @docs/PRD.md
+              /^~[\\/]\S{1,390}$/,                                   // ~/a/b.md
+              /^\/\S{1,390}\.[A-Za-z0-9]{1,10}$/,                    // /home/a/b.md
+            ].some((pattern) => pattern.test(value))
+          }
+
+          /** 去掉路径结尾的标点（中文句子里的 `。` `）` 等不属于路径）。 */
+          const trimPathPunctuation = (text) => String(text ?? '').replace(/[，。、；：！？）】》"'`]+$/u, '')
+
+          const pathFromSelection = () => {
+            try {
+              const selection = window.getSelection?.()
+              if (selection === null || selection === undefined || selection.isCollapsed) return undefined
+              const text = trimPathPunctuation(selection.toString())
+              return looksLikePath(text) ? text : undefined
+            } catch {
+              return undefined
+            }
+          }
+
+          /** 指针位置 → 文本节点 → 包含该偏移的那个「词」。 */
+          const pathAtPoint = (event) => {
+            const fromSelection = pathFromSelection()
+            if (fromSelection !== undefined) return fromSelection
+
+            const doc = document
+            if (typeof doc.caretRangeFromPoint !== 'function' && typeof doc.caretPositionFromPoint !== 'function') {
+              return undefined
+            }
+            let node
+            let offset
+            try {
+              if (typeof doc.caretRangeFromPoint === 'function') {
+                const range = doc.caretRangeFromPoint(event.clientX, event.clientY)
+                if (range === null || range === undefined) return undefined
+                node = range.startContainer
+                offset = range.startOffset
+              } else {
+                const position = doc.caretPositionFromPoint(event.clientX, event.clientY)
+                if (position === null || position === undefined) return undefined
+                node = position.offsetNode
+                offset = position.offset
+              }
+            } catch {
+              return undefined
+            }
+            if (node === null || node === undefined || node.nodeType !== 3) return undefined
+            const text = node.nodeValue ?? ''
+            if (text.length === 0) return undefined
+
+            // 以空白切词，找包含 offset 的那一段
+            const pattern = /\S+/g
+            let match
+            while ((match = pattern.exec(text)) !== null) {
+              const start = match.index
+              const end = start + match[0].length
+              if (offset < start || offset > end) continue
+              const token = trimPathPunctuation(match[0])
+              return looksLikePath(token) ? token : undefined
+            }
+            return undefined
+          }
+
           useEffect(() => {
             const onContextMenu = (event) => {
               // 网址优先判定：链接里可能嵌着文件卡片的样式，但用户点的是链接本身
@@ -1731,14 +1879,39 @@ window.__ModuleLoader__.load({
                 return
               }
 
+              // 2) 对话里的图片：blob/data URL，交给 /chat-attachment 按哈希找原图
+              const image = imageOf(event.target)
+              if (image !== undefined) {
+                event.preventDefault()
+                event.stopPropagation()
+                setApps(null)
+                setBrowsers(null)
+                setNote('')
+                setMenu({ x: event.clientX, y: event.clientY, image })
+                return
+              }
+
+              // 3) 交付物卡片 / 变更行 / 文件树：路径已经直接标在 DOM 上
               const path = pathOf(event.target, event)
-              if (path === undefined) return      // 不是文件卡片：放行原生菜单
+              if (path !== undefined) {
+                event.preventDefault()
+                event.stopPropagation()
+                setApps(null)
+                setBrowsers(null)
+                setNote('')
+                setMenu({ x: event.clientX, y: event.clientY, path })
+                return
+              }
+
+              // 4) 正文里的路径文本（用户发给 harness 的文档就是这样出现的）
+              const textPath = pathAtPoint(event)
+              if (textPath === undefined) return   // 什么都没有：放行原生菜单
               event.preventDefault()
               event.stopPropagation()
               setApps(null)
               setBrowsers(null)
               setNote('')
-              setMenu({ x: event.clientX, y: event.clientY, path })
+              setMenu({ x: event.clientX, y: event.clientY, path: textPath, fromText: true })
             }
             // 捕获阶段，抢在其它处理之前判定
             window.addEventListener('contextmenu', onContextMenu, true)
@@ -1807,6 +1980,223 @@ window.__ModuleLoader__.load({
           }, [menu])
 
           if (menu === null) return null
+
+          /* ---- 图片菜单：对话里的图片没有磁盘路径，只能按内容哈希回附件库找 ---- */
+          if (menu.image !== undefined && menu.image !== null) {
+            const imageHeight = 240
+            const ix = Math.min(menu.x, Math.max(8, window.innerWidth - 280 - 8))
+            const iy = Math.min(menu.y, Math.max(8, window.innerHeight - imageHeight - 8))
+
+            const scheme = (() => {
+              try {
+                const active = ctx.theme?.getTheme?.()?.active?.colorScheme
+                return active === 'light' ? 'light' : 'dark'
+              } catch {
+                return 'dark'
+              }
+            })()
+
+            const imageItem = (label, onClick) => h('button', {
+              type: 'button',
+              role: 'menuitem',
+              className: 'cm-item',
+              disabled: busy,
+              onClick,
+            }, label)
+
+            /**
+             * 算哈希 → 让宿主去附件库把原图找出来 → 执行动作。
+             *
+             * 传哈希而不是传图片字节，是因为命令会原样记进会话日志；
+             * 80KB 的 base64 会把对话刷成一屏乱码。DSH 的附件本就按 sha256 存，
+             * 哈希就是主键，一个 64 字符的串足够定位。
+             */
+            const actOnImage = async (op) => {
+              if (busy) return
+              setBusy(true)
+              setNote(t('imageResolving'))
+              try {
+                const sha = await shaOf(menu.image.src)
+                const nameB64 = encodeArg(menu.image.name)
+                const mediaB64 = menu.image.mediaType === undefined ? '' : ` --media64=${encodeArg(menu.image.mediaType)}`
+                const line = `/chat-attachment --op=${op} --sha=${sha} --name64=${nameB64}${mediaB64}`
+                await runCommand(sessionIdOf(), line)
+                setMenu(null)
+              } catch (failure) {
+                const message = String(failure?.message ?? failure)
+                setNote(message.includes('找不到') ? t('imageNoSource') : message)
+              } finally {
+                setBusy(false)
+              }
+            }
+
+            const saveImage = async () => {
+              if (busy) return
+              const picker = ctx.remote?.directoryPicker
+              if (picker === undefined || typeof picker.pick !== 'function') {
+                setNote(t('pickerUnavailable'))
+                return
+              }
+              setBusy(true)
+              setNote('')
+              try {
+                const picked = await picker.pick({ title: t('saveAs') })
+                const dir = typeof picked === 'string' ? picked : picked?.path
+                if (typeof dir !== 'string' || dir.length === 0) return
+                const sha = await shaOf(menu.image.src)
+                const mediaB64 = menu.image.mediaType === undefined ? '' : ` --media64=${encodeArg(menu.image.mediaType)}`
+                await runCommand(
+                  sessionIdOf(),
+                  `/chat-attachment --op=saveas --sha=${sha} --name64=${encodeArg(menu.image.name)}${mediaB64} --target64=${encodeArg(dir)}`,
+                )
+                setMenu(null)
+              } catch (failure) {
+                setNote(String(failure?.message ?? failure))
+              } finally {
+                setBusy(false)
+              }
+            }
+
+            /** 复制图片走浏览器剪贴板：图片本来就在浏览器里，不必麻烦宿主。 */
+            const copyImage = async () => {
+              if (busy) return
+              setBusy(true)
+              setNote('')
+              try {
+                const blob = await (await fetch(menu.image.src)).blob()
+                const type = blob.type.startsWith('image/') ? blob.type : 'image/png'
+                await navigator.clipboard.write([new ClipboardItem({ [type]: blob })])
+                setNote(t('imageCopied'))
+                window.setTimeout(() => setMenu(null), 600)
+              } catch {
+                setNote(t('imageCopyFailed'))
+              } finally {
+                setBusy(false)
+              }
+            }
+
+            const copyImageName = async () => {
+              try {
+                await navigator.clipboard.writeText(menu.image.name)
+                setNote(t('imageCopyNameDone'))
+                window.setTimeout(() => setMenu(null), 600)
+              } catch {
+                setNote(t('imageCopyFailed'))
+              }
+            }
+
+            return h('div', {
+              ref: boxRef,
+              role: 'menu',
+              className: 'cm-ctxmenu',
+              'data-cm-scheme': scheme,
+              'data-cm-kind': 'image',
+              style: { left: `${ix}px`, top: `${iy}px` },
+              onContextMenu: (event) => event.preventDefault(),
+            },
+            h('div', { className: 'cm-path', title: menu.image.name }, menu.image.name),
+            h('div', { className: 'cm-group' }, t('imageGroup')),
+            imageItem(t('imageOpen'), () => actOnImage('open')),
+            imageItem(t('imageReveal'), () => actOnImage('reveal')),
+            imageItem(t('saveAs'), saveImage),
+            imageItem(t('imageCopy'), copyImage),
+            imageItem(t('imageCopyName'), copyImageName),
+            note.length > 0 ? h('div', { className: 'cm-note' }, note) : null)
+          }
+
+          /* ---- 正文路径菜单：消息里提到的文件，支持相对路径（用会话工作目录补全） ---- */
+          if (menu.fromText === true) {
+            const tHeight = 170
+            const tx = Math.min(menu.x, Math.max(8, window.innerWidth - 280 - 8))
+            const ty = Math.min(menu.y, Math.max(8, window.innerHeight - tHeight - 8))
+            const scheme = (() => {
+              try {
+                const active = ctx.theme?.getTheme?.()?.active?.colorScheme
+                return active === 'light' ? 'light' : 'dark'
+              } catch {
+                return 'dark'
+              }
+            })()
+
+            const textItem = (label, onClick) => h('button', {
+              type: 'button',
+              role: 'menuitem',
+              className: 'cm-item',
+              disabled: busy,
+              onClick,
+            }, label)
+
+            // 相对路径要靠会话工作目录补全，所以统一带上 --session
+            const actOnText = async (op) => {
+              if (busy) return
+              setBusy(true)
+              setNote('')
+              try {
+                const session = sessionIdOf()
+                const sessionArg = typeof session === 'string' ? ` --session=${session}` : ''
+                await runCommand(session, `/chat-attachment --op=${op} --path64=${encodeArg(menu.path)}${sessionArg}`)
+                setMenu(null)
+              } catch (failure) {
+                setNote(String(failure?.message ?? failure))
+              } finally {
+                setBusy(false)
+              }
+            }
+
+            const saveText = async () => {
+              if (busy) return
+              const picker = ctx.remote?.directoryPicker
+              if (picker === undefined || typeof picker.pick !== 'function') {
+                setNote(t('pickerUnavailable'))
+                return
+              }
+              setBusy(true)
+              setNote('')
+              try {
+                const picked = await picker.pick({ title: t('saveAs') })
+                const dir = typeof picked === 'string' ? picked : picked?.path
+                if (typeof dir !== 'string' || dir.length === 0) return
+                const session = sessionIdOf()
+                const sessionArg = typeof session === 'string' ? ` --session=${session}` : ''
+                await runCommand(
+                  session,
+                  `/chat-attachment --op=saveas --path64=${encodeArg(menu.path)}${sessionArg} --target64=${encodeArg(dir)}`,
+                )
+                setMenu(null)
+              } catch (failure) {
+                setNote(String(failure?.message ?? failure))
+              } finally {
+                setBusy(false)
+              }
+            }
+
+            const copyTextPath = async () => {
+              try {
+                await navigator.clipboard.writeText(menu.path)
+                setNote(t('copyPathDone'))
+                window.setTimeout(() => setMenu(null), 600)
+              } catch {
+                setNote(t('imageCopyFailed'))
+              }
+            }
+
+            return h('div', {
+              ref: boxRef,
+              role: 'menu',
+              className: 'cm-ctxmenu',
+              'data-cm-scheme': scheme,
+              'data-cm-kind': 'text',
+              style: { left: `${tx}px`, top: `${ty}px` },
+              onContextMenu: (event) => event.preventDefault(),
+            },
+            h('div', { className: 'cm-path', title: menu.path }, menu.path),
+            h('div', { className: 'cm-group' }, t('pathGroup')),
+            textItem(t('openFile'), () => actOnText('open')),
+            textItem(t('openFolder'), () => actOnText('reveal')),
+            textItem(t('saveAs'), saveText),
+            textItem(t('copyPath'), copyTextPath),
+            note.length > 0 ? h('div', { className: 'cm-note' }, note) : null)
+          }
 
           /* ---- 网址菜单：和文件菜单共用一个外壳，但动作集合完全不同 ---- */
           if (typeof menu.url === 'string') {

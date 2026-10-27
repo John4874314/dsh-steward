@@ -106,7 +106,7 @@ Replace `<profile>` with your profile name (usually `desktop` for the desktop ap
 ### Option 1 — tarball (recommended, no git needed)
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.3.1
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.4.0
 ```
 
 No local `git` required, and no direct `github.com:443` access required — it only
@@ -294,6 +294,43 @@ right-click do nothing at all, which looks broken. Instead the menu opens normal
 
 Safety comes from "confirm before opening", not from "give you nothing". A silent failure teaches people
 to ignore anomalies; an explicit warning makes them actually read the address.
+
+#### Image context menu
+
+Right-click an image in a conversation (`.png` / `.jpg` / `.jpeg` / `.webp` / `.gif` / `.svg` /
+`.bmp` / `.avif`):
+
+| Action | What it does |
+| --- | --- |
+| Open image | Opens it in the system default viewer |
+| Show in folder | Selects the file in Explorer / Finder |
+| Save as… | Copies it to a folder you pick (name collisions get a number) |
+| Copy image | Puts the image on the clipboard, ready to paste |
+| Copy file name | Copies the original name, e.g. `image.png` |
+
+> Why the indirection: the image on screen is a `blob:` URL, and the browser will not hand you its
+> disk path. The plugin hashes the bytes to sha256 and the host looks the original up by content
+> address under `$DSH_HOME/attachments/v1/`. DSH already stores attachments by sha256, so the hash
+> is the natural primary key — which avoids pushing 80KB of base64 through a command (that would
+> flood the conversation log with garbage).
+
+#### Paths in a message are right-clickable too
+
+Right-click a path in the message body and get "open / show in folder / save as / copy path":
+
+```
+E:\islet\docs\handover.md
+@docs/PRD.md
+./notes.md
+~/Documents/a.pdf
+```
+
+- Relative paths (`@docs/PRD.md`, `./notes.md`) resolve against **this conversation's working
+  directory**, so references you pasted straight in still open.
+- It only triggers when the pointer is genuinely on that piece of text and the text looks like a
+  complete path. A bare `docs/PRD.md`, `https://…`, or ordinary prose never triggers — fewer menus
+  is better than a menu on every sentence.
+- Selecting a path and then right-clicking works as well (the selection wins).
 
 ### 2. The guardrails (three rules) — **off by default, you turn it on**
 
