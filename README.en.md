@@ -48,6 +48,41 @@ This plugin does all five, in **one bundle, one switch, one settings page**.
 
 ## Changelog
 
+### 1.4.1
+
+**Fix: right-click did nothing on an `@` file reference (the `交接日志.md` chip in the screenshot).**
+
+That is DSH's file-reference chip. Its DOM carries only `title="交接日志.md"` (the file
+name); the full path lives in React props and is not reachable. So:
+
+- the client recognises the chip (`span[title]` + text equal to the title + an `svg` icon
+  inside — all three, so ordinary titled text is not mistaken for a file);
+- the **file name** goes to the host, which looks it up under **that session's working directory**;
+- if several files share the name, it **reports the ambiguity and lists every candidate**
+  instead of guessing;
+- the search is bounded: depth 4, skips `node_modules` / `.git` / `dist` and friends,
+  at most 4000 entries.
+
+The menu matches the inline-path one: open / show in folder / save as / copy path.
+
+Also fixed a recognition bug: right-clicking the chip's inner text used to pick the child
+node (which has no title) and miss the chip entirely; it now always walks up with `closest`.
+That bug was caught by the new `test/chip-detect.test.mjs`.
+
+### 1.4.0
+
+- **Image context menu** (`.png` / `.jpg` / `.webp` / `.gif` / `.svg` …): open, show in folder,
+  save as, copy image, copy file name. The image on screen is a `blob:` URL with no disk path,
+  so the plugin hashes the bytes to sha256 and the host looks the original up by content
+  address under `$DSH_HOME/attachments/v1/`. Deliberately not pushing image bytes through the
+  command — that would flood the conversation log.
+- **Right-click paths in a message body**: `E:\a\b.pdf`, `@docs/PRD.md`, `./notes.md` and
+  friends get open / show in folder / save as / copy path. Relative paths resolve against the
+  conversation's working directory.
+- Recognition is deliberately conservative: only when the pointer is on text that actually
+  looks like a path. A bare `docs/PRD.md`, `https://…` or ordinary prose never triggers.
+- New `test/path-detect.test.mjs`: 9 positive and 10 negative cases.
+
 ### 1.3.0
 
 **This fixes a release-blocking bug: 1.0.0 through 1.2.2 could not load when installed from a tarball or npm.**
@@ -106,7 +141,7 @@ Replace `<profile>` with your profile name (usually `desktop` for the desktop ap
 ### Option 1 — tarball (recommended, no git needed)
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.4.0
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.4.1
 ```
 
 No local `git` required, and no direct `github.com:443` access required — it only

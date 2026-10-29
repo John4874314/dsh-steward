@@ -605,6 +605,58 @@ async function saveCopyTo(source, targetDir) {
   return target
 }
 
+/**
+ * 在工作目录下按**文件名**找一个文件。
+ *
+ * 为什么需要：对话里那个「交接日志.md」chip 只把**文件名**放在 DOM 的 title 上，
+ * 完整路径在 React props 里拿不到。所以只能拿文件名回磁盘找。
+ *
+ * 三条克制：
+ *  - 深度上限 4 层，别把整个盘扫一遍；
+ *  - 跳过 node_modules / .git / 各类构建产物目录，它们既慢又不是用户想打开的；
+ *  - 最多返回若干个候选，由调用方判断「唯一命中」才用 —— 同名文件多的时候
+ *    宁可让用户改用别的方式，也不要猜错一个打开。
+ */
+const SEARCH_SKIP_DIRS = new Set([
+  'node_modules', '.git', '.svn', '.hg', 'dist', 'build', 'out', 'target',
+  '.next', '.nuxt', '.cache', '.venv', 'venv', '__pycache__', '.idea', '.vscode',
+])
+
+async function findFilesByName(root, name, limit = 8, maxDepth = 4) {
+  const found = []
+  const wanted = String(name).toLowerCase()
+  const queue = [{ dir: root, depth: 0 }]
+  let visited = 0
+
+  while (queue.length > 0 && found.length < limit && visited < 4000) {
+    const { dir, depth } = queue.shift()
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      visited += 1
+      if (visited >= 4000) break
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (depth >= maxDepth) continue
+        if (SEARCH_SKIP_DIRS.has(entry.name)) continue
+        // 隐藏目录（.开头）通常是配置/缓存，不进去
+        if (entry.name.startsWith('.')) continue
+        queue.push({ dir: full, depth: depth + 1 })
+        continue
+      }
+      if (entry.isFile() && entry.name.toLowerCase() === wanted) {
+        found.push(full)
+        if (found.length >= limit) break
+      }
+    }
+  }
+  return found
+}
+
 /** 插件自己的配置持久化文件（放在 $DSH_HOME，和会话记录分开）。 */
 function configPath() {
   const home = process.env.DSH_HOME
@@ -1396,7 +1448,10 @@ export function apply(ctx, config) {
       description: '打开对话里的图片/附件，或定位它所在的文件夹。',
       handler: async (invocation) => {
         const tokens = String(invocation.rawInput ?? '').trim().split(/\s+/).filter(Boolean)
-        const options = { op: 'open', sha: undefined, path: undefined, name: undefined, media: undefined, targetDir: undefined, sessionId: undefined }
+        const options = { op: 'open', sha: undefined, path: undefined, name: undefined, media: undefined, targetDir: undefined, sessionId: undefined, search: false }
+        // 同名多份时的补充说明（在路径分支里赋值，在 probe 里回给客户端）。
+        // 提到这个作用域是因为它跨越了「定位来源」和「返回结果」两段。
+        let othersNote = ''
         const decode = (v) => {
           try {
             return Buffer.from(v, 'base64').toString('utf8')
@@ -1412,6 +1467,7 @@ export function apply(ctx, config) {
           else if (token.startsWith('--media64=')) options.media = decode(token.slice(10))
           else if (token.startsWith('--target64=')) options.targetDir = decode(token.slice(11))
           else if (token.startsWith('--session=')) options.sessionId = token.slice(10)
+          else if (token === '--search') options.search = true
         }
 
         if (!['open', 'reveal', 'saveas', 'probe'].includes(options.op)) {
@@ -1441,9 +1497,39 @@ export function apply(ctx, config) {
           } else {
             candidate = resolve(candidate)
           }
+          let exists = true
           try {
             await stat(candidate)
           } catch {
+            exists = false
+          }
+          // --search：按文件名在工作目录里找。
+          //
+          // 专供对话里那个「@引用」chip —— 它 DOM 上只有文件名，没有完整路径。
+          // 这里刻意**不先看 candidate 是否存在**：`@交接日志.md` 到底指根目录那份
+          // 还是 docs 里那份，光看文件名无从判断，先命中根目录反而是更可能错的那个。
+          // 所以统一走搜索；命中多份时取最浅的，并把其余候选记下来告诉用户。
+          if (options.search === true) {
+            const base = await sessionBaseDirectory(options.sessionId)
+            if (base === undefined) return { kind: 'error', text: `这个路径不存在：${candidate}` }
+            const hits = await findFilesByName(base, basename(candidate))
+            if (hits.length === 0) {
+              return { kind: 'error', text: `在工作目录里找不到「${basename(candidate)}」` }
+            }
+            if (hits.length > 1) {
+              // 多份同名：取**路径最短**的那份（层级最浅）。
+              //
+              // 依据是 DSH 自己的语义：chip 的 path 相对会话 cwd，
+              // `@交接日志.md` 指的就是 cwd 下那一份；只有用户当初写 `@docs/x.md`
+              // 时 label 才丢掉目录，那种情况浅层优先也最接近原意。
+              // 不静默：把「还有几份同名」记下来，动作完成后一并告诉用户。
+              const sorted = hits.slice().sort((a, b) => a.length - b.length || a.localeCompare(b))
+              candidate = sorted[0]
+              othersNote = `还有 ${sorted.length - 1} 个同名文件：${sorted.slice(1).join('、')}`
+            } else {
+              candidate = hits[0]
+            }
+          } else if (!exists) {
             return { kind: 'error', text: `这个路径不存在：${candidate}` }
           }
           source = candidate
@@ -1461,6 +1547,8 @@ export function apply(ctx, config) {
               path: source,
               isDirectory: info.isDirectory(),
               size: info.size,
+              // 同名多份时的提示，客户端会显示在菜单里，让用户知道开的是哪一个
+              ...(othersNote.length > 0 ? { note: othersNote } : {}),
             }),
           }
         }

@@ -137,6 +137,7 @@ window.__ModuleLoader__.load({
         imageNoSource: '找不到原图（可能只是界面里的预览，还没随消息发出去）',
         imageCopyNameDone: '已复制文件名',
         pathGroup: '文件引用',
+        chipGroup: '对话里引用的文件（按文件名查找）',
         pickerUnavailable: '这个环境没有目录选择器，无法另存',
         copyPathDone: '已复制路径',
 
@@ -304,6 +305,7 @@ window.__ModuleLoader__.load({
         imageNoSource: 'Original not found (this may be a preview that was never sent)',
         imageCopyNameDone: 'File name copied',
         pathGroup: 'File reference',
+        chipGroup: 'File referenced in this conversation (looked up by name)',
         pickerUnavailable: 'No directory picker in this environment; cannot save a copy',
         copyPathDone: 'Path copied',
 
@@ -1748,6 +1750,36 @@ window.__ModuleLoader__.load({
           }
 
           /**
+           * 右键落在对话里的「@文件引用」chip 上时，取它的文件名。
+           *
+           * DSH 把这个 chip 渲染成
+           *   <span title="交接日志.md"><svg/><span>交接日志.md</span></span>
+           * 完整路径只在 React props 里（node.data.path），DOM 上只有**文件名**。
+           * 所以这里只能拿到文件名，剩下的交给宿主按名去工作目录里找。
+           *
+           * 三条同时满足才认，避免误判普通带 title 的元素：
+           *   1) 是 span 且有 title
+           *   2) textContent 与 title 完全一致（chip 的文本就是 label）
+           *   3) 内部有 svg 图标（chip 一定带图标）
+           */
+          const chipOf = (target) => {
+            if (target === null || target === undefined) return undefined
+            if (typeof target.closest !== 'function') return undefined
+            // 一定要 closest 往上找：chip 内部还有子 span（label），
+            // 点到 label 上时 target 本身没有 title，只有外层才有。
+            const span = target.closest('span[title]')
+            if (span === null || span === undefined) return undefined
+            const title = String(span.getAttribute('title') ?? '').trim()
+            if (title.length === 0) return undefined
+            const text = String(span.textContent ?? '').trim()
+            if (text !== title) return undefined
+            if (span.querySelector('svg') === null) return undefined
+            // 只认像文件名的（带扩展名）；目录引用没有扩展名，不处理
+            if (!/\.[A-Za-z0-9]{1,10}$/.test(title)) return undefined
+            return { name: title }
+          }
+
+          /**
            * 右键落在对话里的图片上时，取图片本身。
            *
            * 只用 `blob:` / `data:image/` 两种 src 判定：它们是「这段字节就在浏览器里」
@@ -1891,7 +1923,19 @@ window.__ModuleLoader__.load({
                 return
               }
 
-              // 3) 交付物卡片 / 变更行 / 文件树：路径已经直接标在 DOM 上
+              // 3) 「@文件引用」chip：DOM 上只有文件名，交给宿主按名在工作目录里找
+              const chip = chipOf(event.target)
+              if (chip !== undefined) {
+                event.preventDefault()
+                event.stopPropagation()
+                setApps(null)
+                setBrowsers(null)
+                setNote('')
+                setMenu({ x: event.clientX, y: event.clientY, path: chip.name, chipName: true })
+                return
+              }
+
+              // 4) 交付物卡片 / 变更行 / 文件树：路径已经直接标在 DOM 上
               const path = pathOf(event.target, event)
               if (path !== undefined) {
                 event.preventDefault()
@@ -1903,7 +1947,7 @@ window.__ModuleLoader__.load({
                 return
               }
 
-              // 4) 正文里的路径文本（用户发给 harness 的文档就是这样出现的）
+              // 5) 正文里的路径文本（用户发给 harness 的文档就是这样出现的）
               const textPath = pathAtPoint(event)
               if (textPath === undefined) return   // 什么都没有：放行原生菜单
               event.preventDefault()
@@ -2105,7 +2149,7 @@ window.__ModuleLoader__.load({
           }
 
           /* ---- 正文路径菜单：消息里提到的文件，支持相对路径（用会话工作目录补全） ---- */
-          if (menu.fromText === true) {
+          if (menu.fromText === true || menu.chipName === true) {
             const tHeight = 170
             const tx = Math.min(menu.x, Math.max(8, window.innerWidth - 280 - 8))
             const ty = Math.min(menu.y, Math.max(8, window.innerHeight - tHeight - 8))
@@ -2126,7 +2170,9 @@ window.__ModuleLoader__.load({
               onClick,
             }, label)
 
-            // 相对路径要靠会话工作目录补全，所以统一带上 --session
+            // 相对路径要靠会话工作目录补全，所以统一带上 --session；
+            // chip 只带文件名（没有完整路径），再加 --search 让宿主按名去找。
+            const searchArg = menu.chipName === true ? ' --search' : ''
             const actOnText = async (op) => {
               if (busy) return
               setBusy(true)
@@ -2134,7 +2180,7 @@ window.__ModuleLoader__.load({
               try {
                 const session = sessionIdOf()
                 const sessionArg = typeof session === 'string' ? ` --session=${session}` : ''
-                await runCommand(session, `/chat-attachment --op=${op} --path64=${encodeArg(menu.path)}${sessionArg}`)
+                await runCommand(session, `/chat-attachment --op=${op} --path64=${encodeArg(menu.path)}${sessionArg}${searchArg}`)
                 setMenu(null)
               } catch (failure) {
                 setNote(String(failure?.message ?? failure))
@@ -2160,7 +2206,7 @@ window.__ModuleLoader__.load({
                 const sessionArg = typeof session === 'string' ? ` --session=${session}` : ''
                 await runCommand(
                   session,
-                  `/chat-attachment --op=saveas --path64=${encodeArg(menu.path)}${sessionArg} --target64=${encodeArg(dir)}`,
+                  `/chat-attachment --op=saveas --path64=${encodeArg(menu.path)}${sessionArg}${searchArg} --target64=${encodeArg(dir)}`,
                 )
                 setMenu(null)
               } catch (failure) {
@@ -2190,7 +2236,8 @@ window.__ModuleLoader__.load({
               onContextMenu: (event) => event.preventDefault(),
             },
             h('div', { className: 'cm-path', title: menu.path }, menu.path),
-            h('div', { className: 'cm-group' }, t('pathGroup')),
+            h('div', { className: 'cm-group' },
+              menu.chipName === true ? t('chipGroup') : t('pathGroup')),
             textItem(t('openFile'), () => actOnText('open')),
             textItem(t('openFolder'), () => actOnText('reveal')),
             textItem(t('saveAs'), saveText),

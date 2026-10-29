@@ -47,6 +47,24 @@ DSH 原生把「对话」放在侧边栏，但：
 
 ## 更新日志
 
+### 1.4.1
+
+**修：对话里 `@` 引用的文件（截图里那个 `交接日志.md` 小标签）右键没有菜单。**
+
+那是 DSH 的「文件引用 chip」，DOM 上只有 `title="交接日志.md"`（文件名），
+完整路径只存在 React props 里，拿不到。所以：
+
+- 客户端认出这个 chip（`span[title]` + 文本与 title 一致 + 内含 svg 图标，
+  三条同时成立才算，避免误判普通带 title 的文字）；
+- 把**文件名**交给宿主，宿主在**该会话的工作目录**下按名查找；
+- 同名文件有多份时**报歧义并列出全部候选**，不猜一个打开；
+- 搜索限深度 4 层、跳过 `node_modules` / `.git` / `dist` 等目录，最多 4000 条目。
+
+菜单与正文路径一致：打开 / 在文件夹中显示 / 另存为 / 复制路径。
+
+顺带修了一个识别 bug：点在 chip 内部的文字上时，之前会取到子节点（没有 title）而认不出来；
+现在统一 `closest` 往上找。这个 bug 是被新加的 `test/chip-detect.test.mjs` 抓到的。
+
 ### 1.4.0
 
 **新增：对话里的图片、正文里的文件路径，都能右键操作。**
@@ -141,7 +159,7 @@ icon.svg: icon must remain inside its package directory
 ### 方式一：tarball（推荐，不依赖 git）
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.4.0
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.4.1
 ```
 
 不要求本机装 git，也不要求 `github.com:443` 可直连 —— 只走 `codeload.github.com`。
@@ -346,6 +364,9 @@ E:\islet\docs\交接文档.md
 - 只认「指针真的落在那段文字上」的情况，而且必须是完整的一段带路径特征的文本。
   没有 `@` 的 `docs/PRD.md`、`https://…`、普通句子都不会触发 —— 宁可少弹，不要满屏乱弹。
 - 想省事的话，拖选一段路径再右键也行（选中优先）。
+- **对话里带文件图标的 `@引用` 小标签**（比如 `交接日志.md`）也能右键。那种标签的 DOM
+  上只有文件名、没有路径，所以插件会把文件名交给宿主，在**这个对话的工作目录**里按名查找；
+  同名文件有多个时会列出全部候选让你看清，不会猜一个打开。
 
 
 ### 二、运行守则（三原则）—— **默认关闭，要你自己开**
