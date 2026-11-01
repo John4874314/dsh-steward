@@ -218,3 +218,50 @@ test('活会话与回收站会话的引用要合并计算，不重复也不漏',
     box.done()
   }
 })
+
+// days 是"孤儿是什么时候来的"的唯一线索（附件名是 sha256，不带来源）。
+// 它必须与孤儿总数/总字节严格对得上，否则界面上会出现自相矛盾的数字。
+test('按日期分组的数量与字节必须与孤儿总数一致', async () => {
+  const box = sandbox()
+  try {
+    box.putAttachment('o1')
+    box.putAttachment('o2')
+    box.putAttachment('o3')
+    // 一个被引用的，不该进 days
+    const used = box.putAttachment('used')
+    box.putLog(['ref ' + used])
+
+    const { scanAttachments } = loadStorageModule()
+    const result = await scanAttachments()
+
+    assert.equal(result.orphans.length, 3)
+    assert.ok(Array.isArray(result.days), 'days 必须是数组')
+    const countSum = result.days.reduce((a, d) => a + d.count, 0)
+    const byteSum = result.days.reduce((a, d) => a + d.bytes, 0)
+    assert.equal(countSum, result.orphans.length, '按日期分组的个数相加必须等于孤儿总数')
+    assert.equal(byteSum, result.orphanBytes, '按日期分组的字节相加必须等于孤儿总字节')
+    // 日期格式 YYYY-MM-DD，且是本地时区切的（不出现 UTC 偏移导致的错日）
+    for (const d of result.days) {
+      assert.match(d.day, /^\d{4}-\d{2}-\d{2}$/)
+    }
+  } finally {
+    box.done()
+  }
+})
+
+test('没有孤儿时 days 为空数组，不是 undefined', async () => {
+  const box = sandbox()
+  try {
+    const used = box.putAttachment('only-one')
+    box.putLog(['ref ' + used])
+
+    const { scanAttachments } = loadStorageModule()
+    const result = await scanAttachments()
+
+    assert.equal(result.orphans.length, 0)
+    assert.ok(Array.isArray(result.days))
+    assert.equal(result.days.length, 0)
+  } finally {
+    box.done()
+  }
+})

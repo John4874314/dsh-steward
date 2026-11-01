@@ -534,6 +534,29 @@ async function scanAttachments() {
   for (const orphan of orphans) orphanBytes += orphan.bytes
   orphans.sort((a, b) => b.bytes - a.bytes)
 
+  /*
+   * 按「产生日期」给孤儿分组。
+   *
+   * 为什么要这个：附件名是 sha256，本身不带来源信息 —— DSH 不记录"这张图
+   * 来自哪个对话"。所以"这些孤儿是不是我删掉的对话留下的"没法证明。
+   * 唯一能用的线索是**时间**：如果 30 个孤儿集中生成在同一天、体积也相近，
+   * 那多半是某一次批量粘贴的产物，用户凭印象就可能想起来是哪次。
+   * 只给一个"50 个"的总数，用户没有判断依据。
+   *
+   * 日期按**本地时区**切，不用 ISO 的 UTC 日期 —— 用户想的是"10 月 21 日那天"，
+   * 不是 UTC 的 10 月 21 日。
+   */
+  const byDay = new Map()
+  for (const orphan of orphans) {
+    const d = new Date(orphan.mtimeMs)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    if (!byDay.has(key)) byDay.set(key, { day: key, count: 0, bytes: 0 })
+    const bucket = byDay.get(key)
+    bucket.count += 1
+    bucket.bytes += orphan.bytes
+  }
+  const days = [...byDay.values()].sort((a, b) => (a.day < b.day ? 1 : -1))
+
   return {
     ok: true,
     total: byName.size,
@@ -545,6 +568,8 @@ async function scanAttachments() {
     // 回收站里被算作引用来源的日志数。界面要显示它，
     // 否则用户不知道"为什么孤儿数比我以为的少"。
     trashLogCount: trashScanned,
+    // 按产生日期分组，给用户判断"这批是什么时候来的"的依据
+    days,
   }
 }
 
@@ -3333,6 +3358,8 @@ export function apply(ctx, config) {
                 logs: result.logCount,
                 // 回收站里被算作引用来源的日志数
                 trashLogs: result.trashLogCount ?? 0,
+                // 按产生日期分组，最多 30 组，避免长清单塞进会话日志
+                days: (result.days ?? []).slice(0, 30),
               },
               trash: { count: trash.length, bytes: trashBytes },
               backups: { exists: backups.exists === true, bytes: backups.bytes ?? 0 },

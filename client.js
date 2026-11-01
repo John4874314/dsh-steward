@@ -176,6 +176,8 @@ window.__ModuleLoader__.load({
         storageTrash: '回收站占用',
         storageBackups: '备份占用',
         storageTop: '占用最大的几个',
+        storageDaysTitle: '按产生日期（帮你判断这批是什么时候来的）',
+        storageDaysMajor: '← 这一天的占了一大半，多半是同一次批量操作的产物',
         storageCleaned: '已清理，数字已刷新。',
         storageCleanConfirm: '把孤儿附件移入回收站？可以在「回收站」分页恢复，不会直接删除。',
         storageCleanNote: '清理只把文件移进回收站，不直接删除。但如果某个会话记录早已被删掉，它引用过的附件就会被判成孤儿 —— 这是这套判定的已知边界。',
@@ -383,6 +385,8 @@ window.__ModuleLoader__.load({
         storageTrash: 'Trash usage',
         storageBackups: 'Backup usage',
         storageTop: 'Largest orphans',
+        storageDaysTitle: 'By creation date (helps you recall where these came from)',
+        storageDaysMajor: '← this day holds most of them, likely one batch operation',
         storageCleaned: 'Cleaned. Numbers refreshed.',
         storageCleanConfirm: 'Move orphan attachments to the trash? They can be restored from the Trash tab; nothing is deleted outright.',
         storageCleanNote: 'Cleaning only moves files to the trash, never deletes them. But if a session log was already deleted, the attachments it referenced will look like orphans — that is the known limit of this detection.',
@@ -1636,6 +1640,8 @@ window.__ModuleLoader__.load({
           const orphanCount = Number(attachments?.orphanCount ?? 0)
           const orphanBytes = Number(attachments?.orphanBytes ?? 0)
           const top = Array.isArray(report?.top) ? report.top : []
+          // 按产生日期分组的孤儿（宿主按本地时区切好）
+          const days = Array.isArray(attachments?.days) ? attachments.days : []
 
           return h('div', null,
             h('p', { style: S.hint }, t('storageHint')),
@@ -1665,6 +1671,21 @@ window.__ModuleLoader__.load({
                   h('span', { style: S.kvKey }, t('storageBackups')),
                   h('span', { style: S.kvVal },
                     backups?.exists === true ? formatBytes(backups.bytes ?? 0) : '—'))),
+
+            /* 按产生日期分组：判断"这批孤儿是什么时候来的"的唯一线索。
+               附件名是 sha256，DSH 不记录来源，所以只能靠时间让用户回忆。 */
+            days.length > 0
+              ? h('div', { style: { marginTop: '10px' } },
+                h('div', { style: { ...S.itemMeta, marginBottom: '4px' } }, t('storageDaysTitle')),
+                h('ul', { style: { margin: 0, paddingLeft: '18px', fontSize: '12px' } },
+                  days.map((d) => h('li', { key: d.day, style: { marginBottom: '2px' } },
+                    h('span', { style: S.mono }, d.day),
+                    ` · ${d.count} 个 · ${formatBytes(d.bytes)}`,
+                    // 单日占比超过一半时标出来，那通常就是"某一次批量粘贴"的特征
+                    d.count * 2 > orphanCount
+                      ? h('span', { style: { ...S.itemMeta, marginLeft: '6px' } }, t('storageDaysMajor'))
+                      : null))))
+              : null,
 
             top.length > 0
               ? h('details', { style: { marginTop: '8px' } },

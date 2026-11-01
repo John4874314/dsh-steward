@@ -47,6 +47,31 @@ DSH 原生把「对话」放在侧边栏，但：
 
 ## 更新日志
 
+### 1.6.3
+
+**存储页多了「按产生日期」分组，让你能判断这批孤儿是什么时候来的。**
+
+起因是个真问题：有人问"那些孤儿附件都是我删过的对话的产物吗"。答案是**没法证明**——
+附件按 sha256 内容寻址，文件名就是哈希，DSH 不记录"这张图来自哪个对话"。
+
+唯一能用的线索是**时间**。所以现在扫完会按日期列出：
+
+```
+按产生日期（帮你判断这批是什么时候来的）
+  2026-10-25    1 个    0.0 MB
+  2026-10-21   27 个   67.1 MB   ← 这一天的占了一大半，多半是同一次批量操作的产物
+  2026-10-20    6 个   17.7 MB
+  2026-09-30   16 个    2.6 MB
+```
+
+某一天占了总数一半以上时会额外标出来 —— 那通常是"某次批量粘贴"的特征，
+比零散分布更容易回忆起来。
+
+日期按**本地时区**切，不是 UTC —— 你想的是"10 月 21 日那天"，不是 UTC 的那天。
+
+新增 2 条测试（`test/storage-scan.test.mjs` 现共 9 条）：按日期分组的个数与字节
+必须与孤儿总数严格一致（防止界面上出现自相矛盾的数字）；没有孤儿时 `days` 是空数组。
+
 ### 1.6.2
 
 **修一个会误删还能用的附件的 bug：孤儿扫描没把回收站里的会话算进去。**
@@ -288,7 +313,7 @@ icon.svg: icon must remain inside its package directory
 ### 方式一：tarball（推荐，不依赖 git）
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.6.2
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.6.3
 ```
 
 不要求本机装 git，也不要求 `github.com:443` 可直连 —— 只走 `codeload.github.com`。
