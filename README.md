@@ -47,6 +47,33 @@ DSH 原生把「对话」放在侧边栏，但：
 
 ## 更新日志
 
+### 1.6.1
+
+**把「备份放哪、怎么写」变成随插件分发的约定，别人的 agent 也能照做。**
+
+1.6.0 给备份加了来源标注，但那套东西只活在我这台机器的记忆里 —— 换个 agent、
+换台机器就不成立了。这次把它写进**随插件分发的守则正文**
+（`AGENTS.guardrails.md`），于是只要你打开「运行三原则」，
+`$DSH_HOME/AGENTS.md` 里就会带上这段，agent 每次改文件前都会按它做备份。
+
+新增的守则段落规定：
+
+- **位置** `$DSH_HOME/backups/<YYYYMMDD-HHmmss>-<是什么>-<在改什么之前>/`，
+  并明确「不要写死盘符」——别人机器上 DSH home 未必在 E 盘。
+- **每条备份自带 `meta.json`**，字段表（`kind` / `label` / `source` / `workspace` /
+  `reason` / `createdAt`）逐条说明必填与否。
+- **两条硬规矩**：`source` 与 `workspace` 不许混用；不确定就不写，不按目录名猜来源。
+
+同时纠正了 1.6.0 留下的一个语义错误：`workspace` 之前被我无条件填成同一个项目目录，
+对「与该项目无关的备份」来说这是错的信息，会让字段退化成噪音。
+现在明确：**与被备份内容无关时留空字符串**。已按此修正两条历史备份
+（workbuddy 升级前备份、profile 锁文件改名前的备份）。
+
+插件 README 也加了同样一节，说明这个目录不只插件在用、agent 的快照也放这儿。
+
+新增 `test` 之外的端到端验证 12 条：守则注入**幂等**（连注两次结果完全一致）、
+不破坏用户原有内容、标记恰好一对、`preview` 与 `get` 正文一致。
+
 ### 1.6.0
 
 **备份分页：每条备份都说清自己是从哪来的。**
@@ -236,7 +263,7 @@ icon.svg: icon must remain inside its package directory
 ### 方式一：tarball（推荐，不依赖 git）
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.6.0
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.6.1
 ```
 
 不要求本机装 git，也不要求 `github.com:443` 可直连 —— 只走 `codeload.github.com`。
@@ -482,6 +509,54 @@ E:\islet\docs\交接文档.md
 写 `AGENTS.md` 等文件前会自动备份到 `$DSH_HOME/backups/`，备份会一直留着占磁盘。
 「备份」分页因此给了两个按钮：**一键清空** 或 **打开备份文件夹** 自己挑。
 插件不会替你自动删 —— 那是不可逆操作，该由你决定。
+
+#### 备份约定：每条都要说清自己从哪来
+
+这个目录不只插件在用：**你的 agent 改东西前留的快照也放这儿**。为了让这些备份在
+一段时间后还看得懂，插件把下面这套约定写进了随它分发的守则正文
+（`AGENTS.guardrails.md`）——你打开「运行三原则」后，它会随守则一起进
+`$DSH_HOME/AGENTS.md`，于是 agent 每次改文件前都会照它做。
+
+**位置**：`$DSH_HOME/backups/<YYYYMMDD-HHmmss>-<是什么>-<在改什么之前>/`
+
+不要写死盘符 —— DSH 的 home 在不同机器上位置不同。放在这里的额外好处是：
+它和 `sessions/`、`trash/` 同一个卷，移动是 `rename`，不复制字节。
+
+**每条备份自带 `meta.json`**（目录备份放在目录里）：
+
+```json
+{
+  "kind": "plugin-source",
+  "label": "dsh-steward 源码快照",
+  "source": "/绝对路径/到/被备份的东西",
+  "workspace": "/触发这次备份的工作目录，无关就留空",
+  "reason": "加备份来源分组之前",
+  "createdAt": 1793542028019
+}
+```
+
+| 字段 | 必填 | 含义 |
+| --- | --- | --- |
+| `kind` | 是 | `plugin-source` / `plugin-upgrade` / `guardrails` / `manual` |
+| `label` | 是 | 一句话说清这是什么 |
+| `source` | 是 | **被备份的东西原来在哪**（不是触发者） |
+| `workspace` | 否 | 哪次工作流触发的；与被备份内容无关时**留空字符串** |
+| `reason` | 是 | 为什么备份，用「<动作>之前」的句式 |
+| `createdAt` | 是 | 毫秒时间戳 |
+
+**两条硬规矩**：
+
+1. **`source` 与 `workspace` 不许混用。** 备份的是 `$DSH_HOME/profiles/...` 下的插件，
+   就不该把某个项目目录塞进 `source`；反过来，一次与工作区无关的备份，
+   `workspace` 应当留空，而不是填一个「反正也对」的默认值 —— 那会让这个字段变成噪音。
+2. **不确定就不写。** 宁可 `kind` 留 `manual`、`reason` 空着，
+   也不要根据目录名猜一个看起来合理的来源。猜出来的来源比没有来源更糟，
+   因为它看上去像真的。
+
+「备份」分页会读这些元信息并按来源分组（插件源码快照 / 插件升级前 / 守则自动备份 /
+手动 / 来源未知）。没有 `meta.json` 的历史备份显示为「来源未知」，不会被猜；
+你可以直接在界面上给它**补说明**。「来源未知」那一组不提供整组清理 ——
+那堆恰恰最需要逐个看一眼。
 
 #### 体检报告什么
 
