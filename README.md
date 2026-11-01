@@ -47,6 +47,31 @@ DSH 原生把「对话」放在侧边栏，但：
 
 ## 更新日志
 
+### 1.6.2
+
+**修一个会误删还能用的附件的 bug：孤儿扫描没把回收站里的会话算进去。**
+
+`scanAttachments` 只扫 `$DSH_HOME/sessions/`，但 `$DSH_HOME/trash/<id>/session/`
+里还躺着被删对话的日志 —— 那些对话是**可恢复**的。只扫 sessions 会把它们引用的附件
+判成孤儿，用户一旦从回收站恢复那个对话，图片就没了。
+
+**"已删除"和"可恢复的已删除"是两件事**，只有前者能让引用失效。
+
+修复后在真实数据上的效果（同一台机器，修复前后对比）：
+
+| | 修复前 | 修复后 |
+| --- | --- | --- |
+| 仍被引用 | 726 | **731** |
+| 孤儿附件 | 55 | **50** |
+| 孤儿占用 | 88.7 MB | **87.4 MB** |
+
+多出来的 5 个就是回收站里那个会话引用的附件 —— 之前会被误删。
+
+界面上「仍被引用」那行现在会显示 `+ N 个回收站日志`，让用户知道这个数是怎么来的。
+
+新增两条测试（共 7 条）：回收站会话引用的附件不算孤儿；活会话与回收站会话的引用
+要合并计算，不重复也不漏。
+
 ### 1.6.1
 
 **把「备份放哪、怎么写」变成随插件分发的约定，别人的 agent 也能照做。**
@@ -263,7 +288,7 @@ icon.svg: icon must remain inside its package directory
 ### 方式一：tarball（推荐，不依赖 git）
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.6.1
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.6.2
 ```
 
 不要求本机装 git，也不要求 `github.com:443` 可直连 —— 只走 `codeload.github.com`。

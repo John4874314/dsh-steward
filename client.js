@@ -1650,7 +1650,10 @@ window.__ModuleLoader__.load({
                 h('div', { style: S.kv },
                   h('span', { style: S.kvKey }, t('storageReferenced')),
                   h('span', { style: S.kvVal },
-                    `${attachments?.referenced ?? 0} 个${t('storageLogsScanned')}${attachments?.logs ?? 0} 个日志`)),
+                    `${attachments?.referenced ?? 0} 个${t('storageLogsScanned')}${attachments?.logs ?? 0} 个日志`
+                    + ((attachments?.trashLogs ?? 0) > 0
+                      ? ` + ${attachments.trashLogs} 个回收站日志`
+                      : ''))),
                 h('div', { style: S.kv },
                   h('span', { style: S.kvKey }, t('storageOrphans')),
                   h('span', { ...S.kvVal, color: orphanCount > 0 ? 'var(--dsw-alias-label-warn, #d97757)' : undefined },

@@ -469,6 +469,11 @@ async function listFilesRecursive(dir) {
  * 会话日志被插件删过（进回收站后又被清空）、或用户手工删过，
  * 那些会话引用过的附件就会失去引用来源，从而被判成孤儿。
  * 所以本函数只负责"算出来"，**删不删由调用方决定**，而且清理动作一律走回收站。
+ *
+ * **必须把回收站里的会话也算作引用来源**（v1.6.2 修的 bug）：
+ * `$DSH_HOME/trash/<id>/session/` 里还躺着被删对话的日志，那些对话是**可恢复**的。
+ * 只扫 `sessions/` 会把它们引用的附件误判成孤儿 —— 用户一恢复对话，图片就没了。
+ * "已删除"和"可恢复的已删除"是两件事，前者才能让引用失效。
  */
 async function scanAttachments() {
   const root = attachmentsRoot()
@@ -476,30 +481,47 @@ async function scanAttachments() {
 
   const files = await listFilesRecursive(root)
   if (files.length === 0) {
-    return { ok: true, total: 0, referenced: 0, orphans: [], totalBytes: 0, orphanBytes: 0, logCount: 0 }
+    return { ok: true, total: 0, referenced: 0, orphans: [], totalBytes: 0, orphanBytes: 0, logCount: 0, trashLogCount: 0 }
   }
 
   const byName = new Map()
   for (const file of files) byName.set(file.name.toLowerCase(), file)
 
+  // 引用来源一：活着的会话
   const sessions = sessionsRoot()
   const logs = sessions === undefined ? [] : await listFilesRecursive(sessions)
-  const logFiles = logs.filter((file) => file.name.endsWith('.zstd'))
+  const liveLogs = logs.filter((file) => file.name.endsWith('.zstd'))
+
+  // 引用来源二：回收站里可恢复的会话（漏了它就会误删还能用的附件）
+  const trash = trashRoot()
+  const trashedAll = trash === undefined ? [] : await listFilesRecursive(trash)
+  const trashedLogs = trashedAll.filter((file) => file.name.endsWith('.zstd'))
 
   const referenced = new Set()
   let scanned = 0
-  for (const log of logFiles) {
-    const decoded = await readSessionLogFrames(log.path)
-    if (decoded === undefined) continue
-    scanned += 1
-    // latin1 足够：sha256 是纯 ASCII，比 UTF-8 解码快且不会因半个字符报错
-    const text = decoded.buffer.toString('latin1')
-    const hits = text.match(/[0-9a-f]{64}/g)
-    if (hits === null) continue
-    for (const hash of hits) {
-      if (byName.has(hash)) referenced.add(hash)
+  let trashScanned = 0
+
+  const collect = async (list, counter) => {
+    for (const log of list) {
+      const decoded = await readSessionLogFrames(log.path)
+      if (decoded === undefined) continue
+      counter.count += 1
+      // latin1 足够：sha256 是纯 ASCII，比 UTF-8 解码快且不会因半个字符报错
+      const text = decoded.buffer.toString('latin1')
+      const hits = text.match(/[0-9a-f]{64}/g)
+      if (hits === null) continue
+      for (const hash of hits) {
+        if (byName.has(hash)) referenced.add(hash)
+      }
     }
   }
+
+  const liveCounter = { count: 0 }
+  const trashCounter = { count: 0 }
+  await collect(liveLogs, liveCounter)
+  await collect(trashedLogs, trashCounter)
+  scanned = liveCounter.count
+  trashScanned = trashCounter.count
 
   const orphans = []
   let totalBytes = 0
@@ -520,6 +542,9 @@ async function scanAttachments() {
     totalBytes,
     orphanBytes,
     logCount: scanned,
+    // 回收站里被算作引用来源的日志数。界面要显示它，
+    // 否则用户不知道"为什么孤儿数比我以为的少"。
+    trashLogCount: trashScanned,
   }
 }
 
@@ -3306,6 +3331,8 @@ export function apply(ctx, config) {
                 orphanCount: result.orphans.length,
                 orphanBytes: result.orphanBytes,
                 logs: result.logCount,
+                // 回收站里被算作引用来源的日志数
+                trashLogs: result.trashLogCount ?? 0,
               },
               trash: { count: trash.length, bytes: trashBytes },
               backups: { exists: backups.exists === true, bytes: backups.bytes ?? 0 },

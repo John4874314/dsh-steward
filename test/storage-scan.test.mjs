@@ -62,6 +62,14 @@ function sandbox() {
       const buffers = frames.map((text) => zlib.zstdCompressSync(Buffer.from(JSON.stringify({ text }))))
       writeFileSync(join(dir, 'session.v4.jsonl.zstd'), Buffer.concat(buffers))
     },
+    /** 写一个「已进回收站但还能恢复」的会话日志。 */
+    putTrashedLog(frames, id = '20260101-000000-abc123') {
+      const dir = join(home, 'trash', id, 'session')
+      mkdirSync(dir, { recursive: true })
+      const buffers = frames.map((text) => zlib.zstdCompressSync(Buffer.from(JSON.stringify({ text }))))
+      writeFileSync(join(dir, 'session.v4.jsonl.zstd'), Buffer.concat(buffers))
+      return id
+    },
     done() {
       process.env.DSH_HOME = previous
       rmSync(home, { recursive: true, force: true })
@@ -159,6 +167,53 @@ test('损坏的半截帧不影响整体判定', async () => {
     assert.equal(result.referenced, 1, '好帧里的引用要算到')
     assert.equal(result.orphans.length, 1)
     assert.equal(result.orphans[0].name, other)
+  } finally {
+    box.done()
+  }
+})
+
+// v1.6.2 修的 bug：回收站里可恢复的会话也是引用来源。
+// 只扫 sessions/ 会把它们引用的附件误判成孤儿，用户一恢复对话图片就没了。
+test('回收站里可恢复的会话，其引用的附件不算孤儿', async () => {
+  const box = sandbox()
+  try {
+    const onlyInTrash = box.putAttachment('referenced-by-trashed-session')
+    const reallyOrphan = box.putAttachment('nobody-uses-this')
+    box.putTrashedLog(['see ' + onlyInTrash])
+
+    const { scanAttachments } = loadStorageModule()
+    const result = await scanAttachments()
+
+    assert.equal(result.referenced, 1, '回收站会话的引用要算到')
+    assert.equal(result.trashLogCount, 1, '要统计到回收站日志数')
+    assert.equal(result.orphans.length, 1)
+    assert.equal(result.orphans[0].name, reallyOrphan)
+    assert.ok(
+      !result.orphans.some((item) => item.name === onlyInTrash),
+      '回收站会话还在引用的附件绝不能进孤儿列表',
+    )
+  } finally {
+    box.done()
+  }
+})
+
+test('活会话与回收站会话的引用要合并计算，不重复也不漏', async () => {
+  const box = sandbox()
+  try {
+    const live = box.putAttachment('live-ref')
+    const trashed = box.putAttachment('trash-ref')
+    const neither = box.putAttachment('no-ref')
+    box.putLog(['a ' + live])
+    box.putTrashedLog(['b ' + trashed])
+
+    const { scanAttachments } = loadStorageModule()
+    const result = await scanAttachments()
+
+    assert.equal(result.referenced, 2)
+    assert.equal(result.logCount, 1, '活会话日志 1 个')
+    assert.equal(result.trashLogCount, 1, '回收站日志 1 个')
+    assert.equal(result.orphans.length, 1)
+    assert.equal(result.orphans[0].name, neither)
   } finally {
     box.done()
   }
