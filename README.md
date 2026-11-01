@@ -47,6 +47,47 @@ DSH 原生把「对话」放在侧边栏，但：
 
 ## 更新日志
 
+### 1.6.0
+
+**备份分页：每条备份都说清自己是从哪来的。**
+
+以前「备份」分页只能看到一句「11 项 · 5.2 MB」，下面一堆
+`20261026-122749-steward-before-review-fixes` 这样的目录名 —— 过两周连我自己都认不出
+哪个是哪个工作区的、为什么备份的。
+
+这次给每条备份加一份 `meta.json`，界面按**来源**分组：
+
+| 来源 | 什么时候产生 |
+| --- | --- |
+| 插件源码快照 | 改插件代码前的手动快照 |
+| 插件升级前备份 | 升级其它插件（如 workbuddy）前的备份 |
+| `AGENTS.md` 覆盖前自动备份 | 你点「恢复守则」时插件自动生成的 `AGENTS.md.<时间戳>.bak` |
+| 手动备份 | 其它手动留的 |
+| 来源未知（旧备份） | 没有 meta 的历史条目 |
+
+**三条刻意的取舍**：
+
+- **绝不根据目录名猜来源。** `...-steward-...` 看着像插件快照，但名字里没有任何工作区
+  或时间语义保证。猜出来的来源比没有来源更糟 —— 它看上去像真的。所以没有 meta 的
+  一律进「来源未知」，界面上提供「补说明」入口让你自己填。
+- **「来源未知」不允许整组清理。** 那一堆恰恰是最需要逐个看一眼的，
+  给个一键清掉的口子等于把风险最高的操作做得最省事。
+- **按组清理也是移进回收站。** 备份本身就是回退手段，删备份是最不该鲁棒性差的操作。
+  进了回收站还能捞回来。
+
+顺带修了一个真 bug：`/chat-backup` 的子命令解析用的是**整行** trim，
+于是 `meta <id>` 拼成 `"meta 20261025-..."` 永远不等于 `'meta'` ——
+所有带参数的子命令都被当成未知动作。已改成取第一个词。
+
+命令行：
+
+```
+/chat-backup list                    # 按来源分组列出
+/chat-backup meta <id> --kind=... --label64=... --workspace64=... --reason64=...
+/chat-backup trash <id...>           # 指定条目
+/chat-backup trash --group=<origin>  # 按来源整组
+```
+
 ### 1.5.0
 
 **新增「存储」分页：插件开始管它自己的垃圾了。**
@@ -195,7 +236,7 @@ icon.svg: icon must remain inside its package directory
 ### 方式一：tarball（推荐，不依赖 git）
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.5.0
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.6.0
 ```
 
 不要求本机装 git，也不要求 `github.com:443` 可直连 —— 只走 `codeload.github.com`。

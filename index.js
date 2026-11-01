@@ -668,6 +668,258 @@ async function backupInfo() {
   }
 }
 
+/**
+ * 备份条目的元信息文件名。
+ *
+ * 为什么需要这个：$DSH_HOME/backups 里的条目来自**完全不同的来源** ——
+ * 插件自己覆盖 AGENTS.md 前的自动备份、agent 改插件源码前的手动快照、
+ * 升级别的插件前的备份。光看目录名分不出来，用户只能盯着一堆
+ * 「20261026-122749-steward-before-review-fixes」去猜。
+ *
+ * 所以给每条备份一个 meta.json，写明来源、工作区、改动原因。
+ * 界面上按这份元信息分组，而不是按名字猜。
+ */
+const BACKUP_META_NAME = 'meta.json'
+
+/** 认识的四类备份来源。`unknown` 是给没有 meta 的旧备份留的，不猜。 */
+const BACKUP_KINDS = ['plugin-source', 'plugin-upgrade', 'guardrails', 'manual', 'unknown']
+
+/** 读一条备份的 meta；没有或坏了返回 undefined（不抛错，旧备份就是没有）。 */
+async function readBackupMeta(file) {
+  try {
+    const parsed = JSON.parse(await readFile(file, 'utf8'))
+    if (parsed === null || typeof parsed !== 'object') return undefined
+    return parsed
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 列出备份目录里的全部条目，带上来源元信息和占用。
+ *
+ * 条目有两种形态：
+ *   1. 目录 —— 一次快照，里面可能有很多文件；
+ *   2. 单个文件 —— 插件覆盖 AGENTS.md 前留下的 `AGENTS.md.<时间戳>.bak`。
+ * 两种都要列，否则用户看到的占用和实际占用对不上。
+ */
+async function listBackups() {
+  const root = backupRoot()
+  if (root === undefined) return { dir: '', exists: false, items: [] }
+  let entries
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch {
+    return { dir: root, exists: false, items: [] }
+  }
+
+  const items = []
+  for (const entry of entries) {
+    // 元信息文件本身不是备份条目
+    if (!entry.isDirectory() && entry.name === BACKUP_META_NAME) continue
+    const path = join(root, entry.name)
+
+    if (entry.isDirectory()) {
+      const meta = await readBackupMeta(join(path, BACKUP_META_NAME))
+      const size = await measure(path)
+      items.push({
+        id: entry.name,
+        name: entry.name,
+        kind: 'directory',
+        bytes: size.bytes,
+        files: size.files,
+        // 没有 meta 就是 unknown —— 绝不根据目录名编造来源
+        origin: meta?.kind ?? 'unknown',
+        label: meta?.label ?? '',
+        workspace: meta?.workspace ?? '',
+        source: meta?.source ?? '',
+        reason: meta?.reason ?? '',
+        createdAt: meta?.createdAt ?? null,
+        hasMeta: meta !== undefined,
+      })
+      continue
+    }
+
+    if (!entry.isFile()) continue
+    let info
+    try {
+      info = await stat(path)
+    } catch {
+      continue
+    }
+    // 单文件备份：文件名形如 AGENTS.md.2026-10-26T12-27-49-123Z.bak
+    const isGuardrails = /^AGENTS\.md\..+\.bak$/.test(entry.name)
+    items.push({
+      id: entry.name,
+      name: entry.name,
+      kind: 'file',
+      bytes: info.size,
+      files: 1,
+      origin: isGuardrails ? 'guardrails' : 'unknown',
+      label: isGuardrails ? 'AGENTS.md 覆盖前自动备份' : '',
+      workspace: '',
+      source: '',
+      reason: '',
+      createdAt: info.mtimeMs,
+      hasMeta: false,
+    })
+  }
+
+  items.sort((a, b) => {
+    const ta = a.createdAt ?? 0
+    const tb = b.createdAt ?? 0
+    // 有 meta 时间的按时间倒序；没有的退到按名字倒序（名字前缀就是时间戳）
+    if (ta !== tb) return tb - ta
+    return String(b.name).localeCompare(String(a.name))
+  })
+  return { dir: root, exists: true, items }
+}
+
+/**
+ * 按来源分组。分组是为了让「一堆看不懂名字的快照」变成
+ * 「dsh-steward 源码快照 8 项 · 1.9 MB」——用户才知道该清哪一堆。
+ */
+function groupBackups(items) {
+  const groups = new Map()
+  for (const item of items) {
+    const key = item.origin ?? 'unknown'
+    if (!groups.has(key)) {
+      groups.set(key, { origin: key, label: '', bytes: 0, files: 0, items: [] })
+    }
+    const group = groups.get(key)
+    if (group.label.length === 0 && typeof item.label === 'string' && item.label.length > 0) {
+      group.label = item.label
+    }
+    group.bytes += item.bytes ?? 0
+    group.files += item.files ?? 0
+    group.items.push(item)
+  }
+  return [...groups.values()].sort((a, b) => b.bytes - a.bytes)
+}
+
+/**
+ * 给一条备份写/改 meta。
+ *
+ * 存在的意义：那 10 个历史备份没有 meta，用户想补说明时得有个入口。
+ * 允许只写一部分字段（比如只写 label），其余保留原值。
+ */
+async function writeBackupMeta(id, patch) {
+  const root = backupRoot()
+  if (root === undefined) return { ok: false, text: '无法确定备份目录：DSH_HOME 未设置' }
+  const target = join(root, String(id))
+  let isDir = false
+  try {
+    isDir = (await stat(target)).isDirectory()
+  } catch {
+    return { ok: false, text: `找不到这个备份：${id}` }
+  }
+  if (!isDir) return { ok: false, text: '单个文件的备份不支持附加说明，它的名字已经说明了来历' }
+
+  const file = join(target, BACKUP_META_NAME)
+  const existing = (await readBackupMeta(file)) ?? {}
+  const origin = BACKUP_KINDS.includes(patch.origin) ? patch.origin : (existing.kind ?? 'unknown')
+
+  const merged = {
+    ...existing,
+    kind: origin,
+    label: typeof patch.label === 'string' ? patch.label : (existing.label ?? ''),
+    workspace: typeof patch.workspace === 'string' ? patch.workspace : (existing.workspace ?? ''),
+    source: typeof patch.source === 'string' ? patch.source : (existing.source ?? ''),
+    reason: typeof patch.reason === 'string' ? patch.reason : (existing.reason ?? ''),
+    createdAt: typeof existing.createdAt === 'number' ? existing.createdAt : Date.now(),
+    updatedAt: Date.now(),
+  }
+
+  try {
+    await writeFile(file, JSON.stringify(merged, null, 2), 'utf8')
+  } catch (error) {
+    return { ok: false, text: `写说明失败：${error?.message ?? error}` }
+  }
+  return { ok: true, text: `已更新 ${id} 的说明` }
+}
+
+/**
+ * 把一组备份移进回收站。
+ *
+ * 刻意做成「移入回收站」而不是删除：备份本身就是回退手段，
+ * 删掉备份是不可逆操作里最不该鲁棒性差的一种。进了回收站还能捞回来。
+ */
+async function trashBackups(items) {
+  const root = trashRoot()
+  const backup = backupRoot()
+  if (root === undefined || backup === undefined) {
+    return { ok: false, text: '无法确定回收站位置：DSH_HOME 未设置' }
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    return { ok: true, moved: 0, bytes: 0, text: '没有选中的备份' }
+  }
+
+  const trashId = newTrashId()
+  const entryDir = join(root, trashId)
+  const payload = join(entryDir, 'backups')
+  try {
+    await mkdir(payload, { recursive: true })
+  } catch (error) {
+    return { ok: false, text: `无法创建回收站目录：${error?.message ?? error}` }
+  }
+
+  let moved = 0
+  let bytes = 0
+  const failed = []
+  const movedNames = []
+  for (const item of items) {
+    const from = join(backup, String(item.id))
+    try {
+      await movePath(from, join(payload, String(item.id)))
+      moved += 1
+      bytes += item.bytes ?? 0
+      movedNames.push(item.id)
+    } catch (error) {
+      failed.push(`${item.id}: ${error?.message ?? error}`)
+    }
+  }
+
+  try {
+    await writeFile(
+      join(entryDir, 'meta.json'),
+      JSON.stringify(
+        {
+          id: trashId,
+          kind: 'backups',
+          title: `${moved} 个备份`,
+          deletedAt: Date.now(),
+          hasSession: false,
+          hasFolder: false,
+          count: moved,
+          bytes,
+          // 记下原位置，恢复时按它搬回去
+          backupRoot: backup,
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    )
+    await writeFile(
+      join(entryDir, 'origin.json'),
+      JSON.stringify(movedNames.map((name) => ({ name, origin: join(backup, name) })), null, 2),
+      'utf8',
+    )
+  } catch (error) {
+    ctxWarn(`dsh-steward: 回收站元信息写入失败：${error?.message ?? error}`)
+  }
+
+  const note = failed.length > 0 ? `，${failed.length} 个失败` : ''
+  return {
+    ok: true,
+    moved,
+    bytes,
+    trashId,
+    failed,
+    text: `已把 ${moved} 个备份（${formatBytes(bytes)}）移入回收站${note}。可在「回收站」分页恢复。`,
+  }
+}
+
 /** 打开一个目录（资源管理器）。宿主侧用 explorer，其它平台用系统默认打开器。 */
 function openDirectory(path) {
   const platform = process.platform
@@ -1420,6 +1672,34 @@ export function apply(ctx, config) {
         }
       }
       notes.push(`已恢复 ${back} 个附件`)
+    }
+
+    // 备份批次：同样按 origin.json 搬回各自的原位置
+    if (meta.kind === 'backups') {
+      const payloadDir = join(entryDir, 'backups')
+      let origins = []
+      try {
+        origins = JSON.parse(await readFile(join(entryDir, 'origin.json'), 'utf8'))
+      } catch {
+        origins = []
+      }
+      if (!Array.isArray(origins) || origins.length === 0) {
+        return { ok: false, text: '这条备份记录的原始路径清单缺失，内容留在回收站里，可手动取回' }
+      }
+      let back = 0
+      for (const item of origins) {
+        if (typeof item?.origin !== 'string' || item.origin.length === 0) continue
+        const from = join(payloadDir, String(item.name ?? ''))
+        if (!(await exists(from))) continue
+        try {
+          await mkdir(dirname(item.origin), { recursive: true })
+          await movePath(from, item.origin)
+          back += 1
+        } catch (error) {
+          notes.push(`${item.name} 恢复失败：${error?.message ?? error}`)
+        }
+      }
+      notes.push(`已恢复 ${back} 个备份`)
     }
 
     // 文件类条目：回收站里放的就是那个文件本身，直接搬回原路径
@@ -2814,11 +3094,12 @@ export function apply(ctx, config) {
               bytes: items.reduce((sum, item) => sum + (item.bytes ?? 0), 0),
               items: items.map((item) => ({
                 id: item.id,
-                // 三种来源：conversation（删对话）、file（删文件）、attachments（清理孤儿附件）。
-                // 早先这里写成「非 file 即 conversation」，会把附件批次显示成对话，已修正。
+                // 四种来源都要如实区分：删对话、删文件、清理孤儿附件、清理备份。
+                // 早先这里写成「非 file 即 conversation」，会把后两种显示成对话。
                 kind: item.kind === 'file' ? 'file'
                   : item.kind === 'attachments' ? 'attachments'
-                    : 'conversation',
+                    : item.kind === 'backups' ? 'backups'
+                      : 'conversation',
                 sessionId: item.sessionId,
                 title: item.title ?? '',
                 deletedAt: item.deletedAt ?? 0,
@@ -2861,7 +3142,11 @@ export function apply(ctx, config) {
       name: 'chat-backup',
       description: '备份目录：info 查看占用、clear 一键清空、open 打开文件夹让用户自己取舍。',
       handler: async (invocation) => {
-        const action = String(invocation.rawInput ?? '').trim().toLowerCase() || 'info'
+        // 注意：这里必须取**第一个词**当子命令。
+        // 早先写的是整行 trim().toLowerCase()，于是 `meta <id>` 拼成
+        // "meta 20261025-..." 永远不等于 'meta'，带参数的子命令全被当成未知动作。
+        const tokens = String(invocation.rawInput ?? '').trim().split(/\s+/).filter(Boolean)
+        const action = (tokens[0] ?? 'info').toLowerCase()
 
         if (action === 'info') {
           const info = await backupInfo()
@@ -2893,7 +3178,100 @@ export function apply(ctx, config) {
             : { kind: 'error', text: '无法打开文件夹（当前环境不支持）' }
         }
 
-        return { kind: 'error', text: '用法：/chat-backup info | clear | open' }
+        // list：按来源分组。这是「每个备份说明它是哪来的」的入口。
+        if (action === 'list') {
+          const listing = await listBackups()
+          if (listing.exists !== true) {
+            return { kind: 'success', text: JSON.stringify({ dir: listing.dir, exists: false, groups: [], total: 0, bytes: 0 }) }
+          }
+          const groups = groupBackups(listing.items)
+          const totalBytes = listing.items.reduce((sum, item) => sum + (item.bytes ?? 0), 0)
+          return {
+            kind: 'success',
+            text: JSON.stringify({
+              dir: listing.dir,
+              exists: true,
+              total: listing.items.length,
+              bytes: totalBytes,
+              groups: groups.map((group) => ({
+                origin: group.origin,
+                label: group.label,
+                count: group.items.length,
+                bytes: group.bytes,
+                items: group.items.map((item) => ({
+                  id: item.id,
+                  kind: item.kind,
+                  bytes: item.bytes,
+                  files: item.files,
+                  origin: item.origin,
+                  label: item.label,
+                  workspace: item.workspace,
+                  source: item.source,
+                  reason: item.reason,
+                  createdAt: item.createdAt,
+                  hasMeta: item.hasMeta,
+                })),
+              })),
+            }),
+          }
+        }
+
+        // meta：给一条备份补/改说明。历史备份没有 meta 时就靠这个入口。
+        if (action === 'meta') {
+          const id = tokens[1]
+          if (id === undefined) return { kind: 'error', text: '用法：/chat-backup meta <id> [--kind=...] [--label64=...] [--workspace64=...] [--reason64=...]' }
+          const patch = {}
+          const decode = (v) => {
+            try {
+              return Buffer.from(v, 'base64').toString('utf8')
+            } catch {
+              return undefined
+            }
+          }
+          for (const token of tokens.slice(2)) {
+            if (token.startsWith('--kind=')) patch.origin = token.slice(7)
+            else if (token.startsWith('--label64=')) patch.label = decode(token.slice(10))
+            else if (token.startsWith('--workspace64=')) patch.workspace = decode(token.slice(14))
+            else if (token.startsWith('--reason64=')) patch.reason = decode(token.slice(11))
+            else if (token.startsWith('--source64=')) patch.source = decode(token.slice(11))
+          }
+          const result = await writeBackupMeta(id, patch)
+          return result.ok ? { kind: 'success', text: result.text } : { kind: 'error', text: result.text }
+        }
+
+        // trash：把选中的备份移进回收站（不是删除）。可传 --group=<origin> 按来源整组处理。
+        if (action === 'trash') {
+          const listing = await listBackups()
+          if (listing.exists !== true) return { kind: 'success', text: '备份目录不存在，没什么可清理的' }
+
+          const groupArg = tokens.find((token) => token.startsWith('--group='))?.slice(8)
+          const idArgs = tokens.slice(1).filter((token) => !token.startsWith('--'))
+
+          let picked
+          if (typeof groupArg === 'string' && groupArg.length > 0) {
+            picked = listing.items.filter((item) => item.origin === groupArg)
+            if (picked.length === 0) return { kind: 'error', text: `没有来源为「${groupArg}」的备份` }
+            // 来源未知的整组不允许一把清掉：那正是最需要人看一眼的
+            if (groupArg === 'unknown') {
+              return { kind: 'error', text: '「来源未知」的备份不允许按组清理 —— 请逐个确认后再处理' }
+            }
+          } else if (idArgs.length > 0) {
+            const byId = new Map(listing.items.map((item) => [item.id, item]))
+            picked = []
+            for (const id of idArgs) {
+              const item = byId.get(id)
+              if (item === undefined) return { kind: 'error', text: `找不到这个备份：${id}` }
+              picked.push(item)
+            }
+          } else {
+            return { kind: 'error', text: '用法：/chat-backup trash <id...> 或 --group=<origin>' }
+          }
+
+          const outcome = await trashBackups(picked)
+          return outcome.ok ? { kind: 'success', text: outcome.text } : { kind: 'error', text: outcome.text }
+        }
+
+        return { kind: 'error', text: '用法：/chat-backup info | list | meta <id> | trash <id...> | --group=<origin> | clear | open' }
       },
     })
   }, 'dsh-steward: /chat-backup')

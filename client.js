@@ -179,6 +179,31 @@ window.__ModuleLoader__.load({
         storageCleaned: '已清理，数字已刷新。',
         storageCleanConfirm: '把孤儿附件移入回收站？可以在「回收站」分页恢复，不会直接删除。',
         storageCleanNote: '清理只把文件移进回收站，不直接删除。但如果某个会话记录早已被删掉，它引用过的附件就会被判成孤儿 —— 这是这套判定的已知边界。',
+        // 备份来源分组
+        backupOriginUnknown: '来源未知（旧备份）',
+        backupOriginPluginSource: '插件源码快照',
+        backupOriginPluginUpgrade: '插件升级前备份',
+        backupOriginGuardrails: 'AGENTS.md 覆盖前自动备份',
+        backupOriginManual: '手动备份',
+        backupOrigins: {
+          'plugin-source': '插件源码快照',
+          'plugin-upgrade': '插件升级前备份',
+          guardrails: 'AGENTS.md 覆盖前自动备份',
+          manual: '手动备份',
+          unknown: '来源未知（旧备份）',
+        },
+        backupGroupNoBulk: '来源未知，不提供整组清理',
+        backupTrashGroup: '整组移入回收站',
+        backupTrashOne: '移入回收站',
+        backupTrashGroupConfirm: '把这一组备份移入回收站？可以在「回收站」分页恢复，不会直接删除。',
+        backupTrashOneConfirm: '把这个备份移入回收站？可以在「回收站」分页恢复。',
+        backupTrashed: '已移入回收站。',
+        backupEditMeta: '补说明',
+        backupMetaLabel: '这是什么（如：dsh-steward 源码快照）',
+        backupMetaWorkspace: '属于哪个工作区（如：E:\\dsh-workspace\\project\\test_2）',
+        backupMetaReason: '为什么备份（如：改文件类型右键之前）',
+        backupMetaSaved: '说明已保存。',
+        save: '保存',
         refresh: '刷新',
         loading: '正在读取…',
         emptyTrash: '回收站是空的',
@@ -361,6 +386,30 @@ window.__ModuleLoader__.load({
         storageCleaned: 'Cleaned. Numbers refreshed.',
         storageCleanConfirm: 'Move orphan attachments to the trash? They can be restored from the Trash tab; nothing is deleted outright.',
         storageCleanNote: 'Cleaning only moves files to the trash, never deletes them. But if a session log was already deleted, the attachments it referenced will look like orphans — that is the known limit of this detection.',
+        backupOriginUnknown: 'Unknown origin (old backups)',
+        backupOriginPluginSource: 'Plugin source snapshots',
+        backupOriginPluginUpgrade: 'Pre-upgrade backups',
+        backupOriginGuardrails: 'Automatic AGENTS.md backups',
+        backupOriginManual: 'Manual backups',
+        backupOrigins: {
+          'plugin-source': 'Plugin source snapshots',
+          'plugin-upgrade': 'Pre-upgrade backups',
+          guardrails: 'Automatic AGENTS.md backups',
+          manual: 'Manual backups',
+          unknown: 'Unknown origin (old backups)',
+        },
+        backupGroupNoBulk: 'Origin unknown — no bulk clean',
+        backupTrashGroup: 'Move group to trash',
+        backupTrashOne: 'Move to trash',
+        backupTrashGroupConfirm: 'Move this whole group to the trash? You can restore them from the Trash tab; nothing is deleted outright.',
+        backupTrashOneConfirm: 'Move this backup to the trash? You can restore it from the Trash tab.',
+        backupTrashed: 'Moved to the trash.',
+        backupEditMeta: 'Add note',
+        backupMetaLabel: 'What is this (e.g. dsh-steward source snapshot)',
+        backupMetaWorkspace: 'Which workspace (e.g. E:\\dsh-workspace\\project\\test_2)',
+        backupMetaReason: 'Why it was made (e.g. before file-type context menus)',
+        backupMetaSaved: 'Note saved.',
+        save: 'Save',
         refresh: 'Refresh',
         loading: 'Loading…',
         emptyTrash: 'The trash is empty',
@@ -529,6 +578,19 @@ window.__ModuleLoader__.load({
       itemTitle: { fontSize: '13px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       itemMeta: { fontSize: '11.5px', lineHeight: '16px', color: 'var(--dsw-alias-label-secondary)' },
       itemActions: { display: 'flex', gap: '6px', flex: '0 0 auto' },
+
+      /* 单行输入框（给备份补说明用）。宽度跟随容器，不固定，避免窄面板溢出 */
+      field: {
+        width: '100%',
+        boxSizing: 'border-box',
+        padding: '4px 8px',
+        borderRadius: '7px',
+        font: 'inherit',
+        fontSize: '12px',
+        color: 'var(--dsw-alias-label-primary)',
+        background: 'var(--dsw-alias-bg-overlay)',
+        border: '1px solid var(--dsw-alias-border-l1)',
+      },
 
       /* 小按钮 */
       small: (danger) => ({
@@ -1103,17 +1165,35 @@ window.__ModuleLoader__.load({
 
         /* ---------- 分页：备份 ---------- */
 
+        /**
+         * 备份分页：按**来源**分组，而不是把一堆时间戳名字平铺。
+         *
+         * 为什么需要这个：backups 里的条目来自完全不同的地方 —— 插件自动备份 AGENTS.md、
+         * agent 改插件源码前的手动快照、升级别的插件前的备份。光看目录名分不出来。
+         * 有 meta.json 的按 meta 分组；没有的（历史备份）老实标成「来源未知」，
+         * 绝不根据名字猜 —— 猜出来的来源比没有来源更糟，因为看上去像真的。
+         */
         function BackupPanel() {
           const [info, setInfo] = useState(null)
+          const [listing, setListing] = useState(null)
           const [busy, setBusy] = useState('')
           const [error, setError] = useState('')
           const [note, setNote] = useState('')
+          const [editing, setEditing] = useState('')
+          const [draft, setDraft] = useState({ label: '', workspace: '', reason: '' })
           const alive = useRef(true)
 
           const load = async () => {
             try {
-              const parsed = await callJson('/chat-backup info')
-              if (alive.current) { setInfo(parsed); setError('') }
+              const [summary, grouped] = await Promise.all([
+                callJson('/chat-backup info'),
+                callJson('/chat-backup list'),
+              ])
+              if (alive.current) {
+                setInfo(summary)
+                setListing(grouped)
+                setError('')
+              }
             } catch (failure) {
               if (alive.current) setError(String(failure?.message ?? failure))
             }
@@ -1154,8 +1234,172 @@ window.__ModuleLoader__.load({
             }
           }
 
+          // 整组移入回收站：这是「一堆同来源的旧快照」最常见的诉求
+          const trashGroup = async (origin) => {
+            if (busy !== '') return
+            if (!window.confirm(t('backupTrashGroupConfirm'))) return
+            setBusy(`group:${origin}`)
+            setError('')
+            setNote('')
+            try {
+              await runCommand(sessionIdOf(), `/chat-backup trash --group=${origin}`)
+              if (alive.current) setNote(t('backupTrashed'))
+              await load()
+            } catch (failure) {
+              if (alive.current) setError(String(failure?.message ?? failure))
+            } finally {
+              if (alive.current) setBusy('')
+            }
+          }
+
+          const trashOne = async (id) => {
+            if (busy !== '') return
+            if (!window.confirm(t('backupTrashOneConfirm'))) return
+            setBusy(`one:${id}`)
+            setError('')
+            setNote('')
+            try {
+              await runCommand(sessionIdOf(), `/chat-backup trash ${id}`)
+              if (alive.current) setNote(t('backupTrashed'))
+              await load()
+            } catch (failure) {
+              if (alive.current) setError(String(failure?.message ?? failure))
+            } finally {
+              if (alive.current) setBusy('')
+            }
+          }
+
+          // 给历史备份补说明：来源未知的条目靠这个入口变得可读
+          const saveMeta = async (id) => {
+            if (busy !== '') return
+            setBusy(`meta:${id}`)
+            setError('')
+            setNote('')
+            try {
+              const parts = [
+                `/chat-backup meta ${id}`,
+                draft.label.length > 0 ? `--label64=${encodeArg(draft.label)}` : '',
+                draft.workspace.length > 0 ? `--workspace64=${encodeArg(draft.workspace)}` : '',
+                draft.reason.length > 0 ? `--reason64=${encodeArg(draft.reason)}` : '',
+              ].filter(Boolean)
+              await runCommand(sessionIdOf(), parts.join(' '))
+              if (alive.current) {
+                setNote(t('backupMetaSaved'))
+                setEditing('')
+                setDraft({ label: '', workspace: '', reason: '' })
+              }
+              await load()
+            } catch (failure) {
+              if (alive.current) setError(String(failure?.message ?? failure))
+            } finally {
+              if (alive.current) setBusy('')
+            }
+          }
+
           const entries = Number(info?.entries ?? 0)
           const bytes = Number(info?.bytes ?? 0)
+          const groups = Array.isArray(listing?.groups) ? listing.groups : []
+
+          const groupLabel = (group) => {
+            if (group.origin === 'unknown') return t('backupOriginUnknown')
+            if (typeof group.label === 'string' && group.label.length > 0) return group.label
+            const known = t('backupOrigins')
+            return known?.[group.origin] ?? group.origin
+          }
+
+          // 单条备份。抽出来是因为原先是四层嵌套的 h(...)，括号一多就容易数错 ——
+          // 抽成函数之后每层的开合都能一眼对上。
+          const renderItem = (item) => {
+            const editingThis = editing === item.id
+            const metaRow = h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' } },
+              h('span', { style: S.mono }, item.id),
+              h('span', { style: S.itemMeta }, formatBytes(item.bytes)),
+              item.workspace.length > 0 ? h('span', { style: S.itemMeta }, `📁 ${item.workspace}`) : null,
+              item.reason.length > 0 ? h('span', { style: S.itemMeta }, item.reason) : null)
+
+            const actionRow = h('div', { style: { display: 'flex', gap: '6px', marginTop: '2px' } },
+              h('button', {
+                type: 'button',
+                style: S.small(busy !== ''),
+                disabled: busy !== '',
+                onClick: () => {
+                  setEditing(editingThis ? '' : item.id)
+                  setDraft({ label: item.label ?? '', workspace: item.workspace ?? '', reason: item.reason ?? '' })
+                },
+              }, editingThis ? t('cancel') : t('backupEditMeta')),
+              h('button', {
+                type: 'button',
+                style: S.small(busy !== ''),
+                disabled: busy !== '',
+                onClick: () => { void trashOne(item.id) },
+              }, t('backupTrashOne')))
+
+            const editor = editingThis
+              ? h('div', { style: { marginTop: '4px', display: 'grid', gap: '4px' } },
+                h('input', {
+                  type: 'text',
+                  placeholder: t('backupMetaLabel'),
+                  value: draft.label,
+                  style: S.field,
+                  onChange: (event) => setDraft({ ...draft, label: event.target.value }),
+                }),
+                h('input', {
+                  type: 'text',
+                  placeholder: t('backupMetaWorkspace'),
+                  value: draft.workspace,
+                  style: S.field,
+                  onChange: (event) => setDraft({ ...draft, workspace: event.target.value }),
+                }),
+                h('input', {
+                  type: 'text',
+                  placeholder: t('backupMetaReason'),
+                  value: draft.reason,
+                  style: S.field,
+                  onChange: (event) => setDraft({ ...draft, reason: event.target.value }),
+                }),
+                h('button', {
+                  type: 'button',
+                  style: S.small(busy !== ''),
+                  disabled: busy !== '',
+                  onClick: () => { void saveMeta(item.id) },
+                }, t('save')))
+              : null
+
+            return h('li', { key: item.id, style: { marginBottom: '6px' } }, metaRow, actionRow, editor)
+          }
+
+          // 一个来源分组。整组清理按钮只对「已知来源」出现 ——
+          // 来源未知的那堆正是最需要人逐个看一眼的，不该给一键清掉的口子。
+          const renderGroup = (group) => {
+            const canBulk = group.origin !== 'unknown'
+            const bulk = canBulk
+              ? h('button', {
+                type: 'button',
+                style: { ...S.small(busy !== ''), marginLeft: 'auto' },
+                disabled: busy !== '',
+                onClick: () => { void trashGroup(group.origin) },
+              }, t('backupTrashGroup'))
+              : h('span', { style: { ...S.itemMeta, margin: 0, marginLeft: 'auto' } }, t('backupGroupNoBulk'))
+
+            const head = h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' } },
+              h('strong', { style: { fontSize: '13px' } }, groupLabel(group)),
+              h('span', { style: { ...S.itemMeta, margin: 0 } }, `${group.count} 项 · ${formatBytes(group.bytes)}`),
+              bulk)
+
+            const list = h('ul', { style: { margin: '8px 0 0', paddingLeft: '16px', fontSize: '12px' } },
+              group.items.map((item) => renderItem(item)))
+
+            return h('div', {
+              key: group.origin,
+              style: {
+                marginBottom: '10px',
+                padding: '10px 12px',
+                borderRadius: '10px',
+                border: '1px solid var(--dsw-alias-border-l1)',
+                background: 'var(--dsw-alias-bg-layer-1)',
+              },
+            }, head, list)
+          }
 
           return h('div', null,
             h('p', { style: S.hint }, t('backupHint')),
@@ -1185,6 +1429,11 @@ window.__ModuleLoader__.load({
                   void clear()
                 },
               }, t('clearBackups'))),
+
+            groups.length > 0
+              ? h('div', { style: { marginTop: '14px' } },
+                groups.map((group) => renderGroup(group)))
+              : null,
 
             note.length > 0 ? h('div', { style: { ...S.itemMeta, marginTop: '8px' }, role: 'status' }, note) : null,
             error.length > 0 ? h('div', { style: S.err }, error) : null)
@@ -1818,6 +2067,7 @@ window.__ModuleLoader__.load({
 
           // 路径 / URL 都用 base64 传：Windows 路径常带空格，URL 里常带 & 和 ?，
           // 直接拼进命令行会被拆断或被 shell 解释。
+          // 这里的 label/workspace 是中文，必须先 UTF-8 编码再 btoa，否则直接报错。
           const encodeArg = (text) => {
             const bytes = new TextEncoder().encode(String(text))
             let binary = ''
