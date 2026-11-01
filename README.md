@@ -47,6 +47,41 @@ DSH 原生把「对话」放在侧边栏，但：
 
 ## 更新日志
 
+### 1.5.0
+
+**新增「存储」分页：插件开始管它自己的垃圾了。**
+
+之前的清理功能（回收站、备份清空、孤儿文件夹）只管**插件自己产生的**东西。
+真正占空间的三项——附件库、会话日志、备份——一直没有入口。这次补上第一项。
+
+**能看到的**：附件库 `$DSH_HOME/attachments/v1/objects` 一共有多少文件、多大，
+多少还被会话引用，多少已经没有任何会话再引用它。
+
+**孤儿是怎么判定的**：DSH 的附件按 sha256 内容寻址存放，文件名就是哈希。
+插件把每个会话日志（多帧 zstd，追加式）逐帧解压成文本，抓出其中的 64 位 hex，
+与附件文件名求差集 —— 剩下的就是孤儿。
+
+实测一台用了两个月的机器：775 个附件 / 335 MB，其中 **75 个 / 152 MB 没有任何会话再引用**。
+
+**三个刻意的取舍**：
+
+- **不自动扫描**。切到这一页不会自动开跑，因为一次扫描要解压全部会话日志
+  （实测约 1.5 秒）。先看轻量信息，点「扫描孤儿附件」才做重活。
+- **不直接删**。清理是把文件**移进回收站**，和删对话同一套逻辑，可以在「回收站」分页恢复。
+  恢复按 `origin.json` 记下的原始绝对路径逐个搬回，不是靠文件名倒推。
+- **如实说明判定的边界**。如果某个会话记录早已被删掉（删完对话又清空了回收站），
+  它引用过的附件就会失去引用来源，从而被判成孤儿。这一点写在界面上，不在文档里藏着。
+
+顺带修了一个真 bug：`/chat-trash list` 早先把「非 file 即 conversation」写死，
+导致新加的附件批次条目在回收站里显示成对话。现在按 `file` / `attachments` / `conversation`
+三类正确区分。
+
+新增 `test/storage-scan.test.mjs`（5 条）：覆盖「被引用不算孤儿」「多帧必须逐帧解压」
+「没有日志时全部算孤儿」「目录不存在不抛错」「半截坏帧不影响判定」——
+第二条尤其重要，只读第一帧会把后面的引用全误判成孤儿。
+
+命令行：`/chat-storage scan | clean | open`。
+
 ### 1.4.1
 
 **修：对话里 `@` 引用的文件（截图里那个 `交接日志.md` 小标签）右键没有菜单。**
@@ -160,7 +195,7 @@ icon.svg: icon must remain inside its package directory
 ### 方式一：tarball（推荐，不依赖 git）
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.4.1
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.5.0
 ```
 
 不要求本机装 git，也不要求 `github.com:443` 可直连 —— 只走 `codeload.github.com`。
@@ -451,7 +486,9 @@ E:\islet\docs\交接文档.md
 
 **明确不会做的**：
 
-- 不联网。整个插件没有任何 `fetch` / `http` / `net` 调用，不上传任何东西。
+- **不联网，不上传任何东西**。宿主侧没有任何 `http` / `net` / `https` 调用。
+  客户端有 2 处 `fetch`，只读本地 `blob:` / `data:` 地址（读界面里已经显示的那张图，
+  用来算 sha256 和写剪贴板），不发往任何服务器。
 - 不读 `$DSH_HOME/sessions/` 之外的数据；读会话只是为了生成交接日志，走 DSH 官方
   `sessionController.inspect()` 通道，不直接解析磁盘。
 - 不改 DSH 安装目录、不改 `cordis.yml` / `cordis.patch.yml`、不改系统设置。

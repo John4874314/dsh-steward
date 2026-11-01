@@ -17,6 +17,8 @@ import { join, resolve, sep, dirname, basename, isAbsolute } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomBytes } from 'node:crypto'
+// 存储管家要读多帧 zstd 会话日志来判定孤儿附件（见 scanAttachments）
+import zlib from 'node:zlib'
 import { spawn, execFile } from 'node:child_process'
 
 /**
@@ -375,6 +377,251 @@ async function listTrash() {
   }
   items.sort((a, b) => Number(b.deletedAt ?? 0) - Number(a.deletedAt ?? 0))
   return items
+}
+
+/* ================================================================== */
+/* 存储管家：谁在占空间、哪些是真没人用的                                 */
+/* ================================================================== */
+
+/**
+ * 附件库根目录。
+ *
+ * DSH 的附件按 sha256 内容寻址存三处，这里只认图片那一路（objects），
+ * 因为 file-objects / files 在多数安装里根本不存在，硬扫只会多一次失败。
+ */
+function attachmentsRoot() {
+  const home = process.env.DSH_HOME
+  if (typeof home !== 'string' || home.length === 0) return undefined
+  return join(home, 'attachments', 'v1', 'objects')
+}
+
+/**
+ * 解压一个多帧 zstd 会话日志。
+ *
+ * 会话日志是**追加式多帧**文件：每次落盘追加一帧，而不是一个大压缩流。
+ * 只按整文件解压会失败（尾部还有 zstd 的魔数），必须按魔数 28 B5 2F FD 切帧。
+ * 最后一帧可能正在写入、解不开，跳过即可 —— 那不是错误。
+ */
+async function readSessionLogFrames(file) {
+  let raw
+  try {
+    raw = await readFile(file)
+  } catch {
+    return undefined
+  }
+  const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+  const parts = []
+  let from = 0
+  let frames = 0
+  for (;;) {
+    const next = raw.indexOf(MAGIC, from + 1)
+    const end = next === -1 ? raw.length : next
+    try {
+      parts.push(zlib.zstdDecompressSync(raw.subarray(from, end)))
+      frames += 1
+    } catch {
+      // 半截帧，跳过
+    }
+    if (next === -1) break
+    from = next
+  }
+  if (frames === 0) return undefined
+  return { buffer: Buffer.concat(parts), frames, compressedBytes: raw.length }
+}
+
+/** 递归列出目录下的普通文件；不存在返回空数组。 */
+async function listFilesRecursive(dir) {
+  const out = []
+  async function walk(current) {
+    let entries
+    try {
+      entries = await readdir(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const path = join(current, entry.name)
+      if (entry.isDirectory()) {
+        await walk(path)
+        continue
+      }
+      if (!entry.isFile()) continue
+      let info
+      try {
+        info = await stat(path)
+      } catch {
+        continue
+      }
+      out.push({ path, name: entry.name, bytes: info.size, mtimeMs: info.mtimeMs })
+    }
+  }
+  await walk(dir)
+  return out
+}
+
+/**
+ * 扫描附件库，判定哪些附件已经没有任何会话再引用。
+ *
+ * 做法：把每个会话日志解压成文本，抓出其中的 64 位 hex（sha256），
+ * 与附件文件名（也是 sha256）求差集。附件名就是哈希，这是 DSH 的设计。
+ *
+ * **判定孤儿是有前提的，必须说清**：
+ * 会话日志被插件删过（进回收站后又被清空）、或用户手工删过，
+ * 那些会话引用过的附件就会失去引用来源，从而被判成孤儿。
+ * 所以本函数只负责"算出来"，**删不删由调用方决定**，而且清理动作一律走回收站。
+ */
+async function scanAttachments() {
+  const root = attachmentsRoot()
+  if (root === undefined) return { ok: false, reason: '找不到 $DSH_HOME' }
+
+  const files = await listFilesRecursive(root)
+  if (files.length === 0) {
+    return { ok: true, total: 0, referenced: 0, orphans: [], totalBytes: 0, orphanBytes: 0, logCount: 0 }
+  }
+
+  const byName = new Map()
+  for (const file of files) byName.set(file.name.toLowerCase(), file)
+
+  const sessions = sessionsRoot()
+  const logs = sessions === undefined ? [] : await listFilesRecursive(sessions)
+  const logFiles = logs.filter((file) => file.name.endsWith('.zstd'))
+
+  const referenced = new Set()
+  let scanned = 0
+  for (const log of logFiles) {
+    const decoded = await readSessionLogFrames(log.path)
+    if (decoded === undefined) continue
+    scanned += 1
+    // latin1 足够：sha256 是纯 ASCII，比 UTF-8 解码快且不会因半个字符报错
+    const text = decoded.buffer.toString('latin1')
+    const hits = text.match(/[0-9a-f]{64}/g)
+    if (hits === null) continue
+    for (const hash of hits) {
+      if (byName.has(hash)) referenced.add(hash)
+    }
+  }
+
+  const orphans = []
+  let totalBytes = 0
+  let orphanBytes = 0
+  for (const [name, file] of byName) {
+    totalBytes += file.bytes
+    if (referenced.has(name)) continue
+    orphans.push({ name, path: file.path, bytes: file.bytes, mtimeMs: file.mtimeMs })
+  }
+  for (const orphan of orphans) orphanBytes += orphan.bytes
+  orphans.sort((a, b) => b.bytes - a.bytes)
+
+  return {
+    ok: true,
+    total: byName.size,
+    referenced: referenced.size,
+    orphans,
+    totalBytes,
+    orphanBytes,
+    logCount: scanned,
+  }
+}
+
+/**
+ * 把孤儿附件移进回收站，**不直接删**。
+ *
+ * 与删除对话同一套逻辑：先进 $DSH_HOME/trash/，用户还能在「回收站」分页恢复。
+ * 附件在 $DSH_HOME 下，和 trash 同卷，所以是 rename，不复制字节。
+ */
+async function trashOrphanAttachments(orphans) {
+  const root = trashRoot()
+  if (root === undefined) return { ok: false, text: '找不到 $DSH_HOME，无法安全地移动附件' }
+  if (!Array.isArray(orphans) || orphans.length === 0) {
+    return { ok: true, moved: 0, bytes: 0, text: '没有需要清理的孤儿附件' }
+  }
+
+  const trashId = newTrashId()
+  const entryDir = join(root, trashId)
+  const filesDir = join(entryDir, 'attachments')
+  try {
+    await mkdir(filesDir, { recursive: true })
+  } catch (error) {
+    return { ok: false, text: `无法创建回收站目录：${error?.message ?? error}` }
+  }
+
+  let moved = 0
+  let bytes = 0
+  const failed = []
+  for (const orphan of orphans) {
+    const target = join(filesDir, orphan.name)
+    try {
+      await movePath(orphan.path, target)
+      moved += 1
+      bytes += orphan.bytes ?? 0
+    } catch (error) {
+      failed.push(`${orphan.name}: ${error?.message ?? error}`)
+    }
+  }
+
+  const files = orphans
+    .slice(0, 500)
+    .map((orphan) => ({ name: orphan.name, bytes: orphan.bytes ?? 0 }))
+
+  try {
+    await writeFile(
+      join(entryDir, 'meta.json'),
+      JSON.stringify(
+        {
+          id: trashId,
+          kind: 'attachments',
+          title: `${moved} 个孤儿附件`,
+          deletedAt: Date.now(),
+          hasSession: false,
+          hasFolder: false,
+          count: moved,
+          bytes,
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    )
+    // 记下每个附件的原始绝对路径。
+    // 恢复时不能只靠文件名倒推：附件按 sha256 分两级目录，路径是算出来的，
+    // 但老版本或将来改了分片规则就会错位。原路径是唯一可靠的凭据。
+    await writeFile(
+      join(entryDir, 'origin.json'),
+      JSON.stringify(
+        orphans.map((orphan) => ({ name: orphan.name, origin: orphan.path })),
+        null,
+        2,
+      ),
+      'utf8',
+    )
+    await writeFile(
+      join(entryDir, 'files.json'),
+      JSON.stringify(files, null, 2),
+      'utf8',
+    )
+  } catch (error) {
+    // 元信息写不进去不算致命：文件已经在回收站里，能被 listTrash 之外的方式找到
+    ctxWarn(`dsh-steward: 回收站元信息写入失败：${error?.message ?? error}`)
+  }
+
+  const note = failed.length > 0 ? `，${failed.length} 个失败` : ''
+  return {
+    ok: true,
+    moved,
+    bytes,
+    trashId,
+    failed,
+    text: `已把 ${moved} 个孤儿附件（${formatBytes(bytes)}）移入回收站${note}。可在「回收站」分页恢复。`,
+  }
+}
+
+/** 人类可读的字节数。 */
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
 /* ================================================================== */
@@ -1145,6 +1392,34 @@ export function apply(ctx, config) {
           notes.push(`文件夹恢复失败：${error?.message ?? error}`)
         }
       }
+    }
+
+    // 孤儿附件批次：按 origin.json 记下的原路径逐个搬回
+    if (meta.kind === 'attachments') {
+      const payloadDir = join(entryDir, 'attachments')
+      let origins = []
+      try {
+        origins = JSON.parse(await readFile(join(entryDir, 'origin.json'), 'utf8'))
+      } catch {
+        origins = []
+      }
+      if (!Array.isArray(origins) || origins.length === 0) {
+        return { ok: false, text: '这条附件记录的原始路径清单缺失，内容留在回收站里，可手动取回' }
+      }
+      let back = 0
+      for (const item of origins) {
+        if (typeof item?.origin !== 'string' || item.origin.length === 0) continue
+        const from = join(payloadDir, String(item.name ?? ''))
+        if (!(await exists(from))) continue
+        try {
+          await mkdir(dirname(item.origin), { recursive: true })
+          await movePath(from, item.origin)
+          back += 1
+        } catch (error) {
+          notes.push(`${item.name} 恢复失败：${error?.message ?? error}`)
+        }
+      }
+      notes.push(`已恢复 ${back} 个附件`)
     }
 
     // 文件类条目：回收站里放的就是那个文件本身，直接搬回原路径
@@ -2539,7 +2814,11 @@ export function apply(ctx, config) {
               bytes: items.reduce((sum, item) => sum + (item.bytes ?? 0), 0),
               items: items.map((item) => ({
                 id: item.id,
-                kind: item.kind === 'file' ? 'file' : 'conversation',
+                // 三种来源：conversation（删对话）、file（删文件）、attachments（清理孤儿附件）。
+                // 早先这里写成「非 file 即 conversation」，会把附件批次显示成对话，已修正。
+                kind: item.kind === 'file' ? 'file'
+                  : item.kind === 'attachments' ? 'attachments'
+                    : 'conversation',
                 sessionId: item.sessionId,
                 title: item.title ?? '',
                 deletedAt: item.deletedAt ?? 0,
@@ -2618,6 +2897,74 @@ export function apply(ctx, config) {
       },
     })
   }, 'dsh-steward: /chat-backup')
+
+  /* ------------------------------------------------------------------ */
+  /* 八·五、/chat-storage：存储管家（谁在占空间）                          */
+  /* ------------------------------------------------------------------ */
+
+  ctx.effect(() => {
+    return ctx.commands.register({
+      name: 'chat-storage',
+      description: '存储管家：scan 只报告不删除、clean 把孤儿附件移入回收站、open 打开附件目录。',
+      handler: async (invocation) => {
+        const tokens = String(invocation.rawInput ?? '').trim().split(/\s+/).filter(Boolean)
+        const action = (tokens[0] ?? 'scan').toLowerCase()
+
+        if (action === 'scan') {
+          const result = await scanAttachments()
+          if (result.ok !== true) {
+            return { kind: 'error', text: result.reason ?? '扫描失败' }
+          }
+          const trash = await listTrash()
+          const trashBytes = trash.reduce((sum, item) => sum + (item.bytes ?? 0), 0)
+          const backups = await backupInfo()
+          return {
+            kind: 'success',
+            text: JSON.stringify({
+              attachments: {
+                total: result.total,
+                referenced: result.referenced,
+                bytes: result.totalBytes,
+                orphanCount: result.orphans.length,
+                orphanBytes: result.orphanBytes,
+                logs: result.logCount,
+              },
+              trash: { count: trash.length, bytes: trashBytes },
+              backups: { exists: backups.exists === true, bytes: backups.bytes ?? 0 },
+              // 只列最大的 20 个，避免把整份清单塞进会话日志
+              top: result.orphans.slice(0, 20).map((orphan) => ({
+                name: orphan.name,
+                bytes: orphan.bytes,
+              })),
+            }),
+          }
+        }
+
+        if (action === 'clean') {
+          // 先重新扫一遍再动手：两次调用之间可能又有附件被引用，不能拿旧清单删
+          const result = await scanAttachments()
+          if (result.ok !== true) {
+            return { kind: 'error', text: result.reason ?? '扫描失败' }
+          }
+          if (result.orphans.length === 0) {
+            return { kind: 'success', text: '没有孤儿附件，不用清理。' }
+          }
+          const outcome = await trashOrphanAttachments(result.orphans)
+          return outcome.ok ? { kind: 'success', text: outcome.text } : { kind: 'error', text: outcome.text }
+        }
+
+        if (action === 'open') {
+          const root = attachmentsRoot()
+          if (root === undefined) return { kind: 'error', text: '找不到 $DSH_HOME' }
+          if (!(await exists(root))) return { kind: 'success', text: `附件目录还不存在：${root}` }
+          const opened = openDirectory(root)
+          return opened ? { kind: 'success', text: root } : { kind: 'error', text: '无法打开文件夹（当前环境不支持）' }
+        }
+
+        return { kind: 'error', text: '用法：/chat-storage scan | clean | open' }
+      },
+    })
+  }, 'dsh-steward: /chat-storage')
 
   /* ------------------------------------------------------------------ */
   /* 八、/chat-doctor：体检（全部只读）                                   */

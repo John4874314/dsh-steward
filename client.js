@@ -160,8 +160,25 @@ window.__ModuleLoader__.load({
         treeMenu: '文件树',
         refreshTree: '刷新文件列表',
 
-        tabs: { conversation: '对话', trash: '回收站', backup: '备份', guardrails: '运行守则', doctor: '体检' },
-        sidebarTabDesc: '对话管家：回收站、备份、运行守则与体检',
+        tabs: { conversation: '对话', trash: '回收站', backup: '备份', storage: '存储', guardrails: '运行守则', doctor: '体检' },
+        sidebarTabDesc: '对话管家：回收站、备份、存储、运行守则与体检',
+        // 存储分页
+        storageHint: '附件库按 sha256 存放，DSH 自己不会清理。这里能看出哪些文件已经没有会话再引用它。',
+        storageNotScanned: '还没扫描。点「扫描孤儿附件」——要解压全部会话日志，通常 1–2 秒。',
+        storageScan: '扫描孤儿附件',
+        storageOpen: '打开附件目录',
+        storageClean: '清理孤儿附件',
+        storageAttachments: '附件库',
+        storageReferenced: '仍被引用',
+        storageLogsScanned: ' · 扫描了 ',
+        storageOrphans: '孤儿附件',
+        storageNoOrphan: '没有孤儿',
+        storageTrash: '回收站占用',
+        storageBackups: '备份占用',
+        storageTop: '占用最大的几个',
+        storageCleaned: '已清理，数字已刷新。',
+        storageCleanConfirm: '把孤儿附件移入回收站？可以在「回收站」分页恢复，不会直接删除。',
+        storageCleanNote: '清理只把文件移进回收站，不直接删除。但如果某个会话记录早已被删掉，它引用过的附件就会被判成孤儿 —— 这是这套判定的已知边界。',
         refresh: '刷新',
         loading: '正在读取…',
         emptyTrash: '回收站是空的',
@@ -326,8 +343,24 @@ window.__ModuleLoader__.load({
         treeMenu: 'Files',
         refreshTree: 'Refresh file list',
 
-        tabs: { conversation: 'Conversation', trash: 'Trash', backup: 'Backups', guardrails: 'Guardrails', doctor: 'Checkup' },
-        sidebarTabDesc: 'Steward: trash, backups, guardrails and checkup',
+        tabs: { conversation: 'Conversation', trash: 'Trash', backup: 'Backups', storage: 'Storage', guardrails: 'Guardrails', doctor: 'Checkup' },
+        sidebarTabDesc: 'Steward: trash, backups, storage, guardrails and checkup',
+        storageHint: 'Attachments are stored by sha256 and DSH never cleans them up. This shows which files no conversation references any more.',
+        storageNotScanned: 'Not scanned yet. Click "Scan orphans" — it decompresses every session log, usually 1–2 seconds.',
+        storageScan: 'Scan orphans',
+        storageOpen: 'Open attachments folder',
+        storageClean: 'Clean orphan attachments',
+        storageAttachments: 'Attachments',
+        storageReferenced: 'Still referenced',
+        storageLogsScanned: ' · scanned ',
+        storageOrphans: 'Orphans',
+        storageNoOrphan: 'No orphans',
+        storageTrash: 'Trash usage',
+        storageBackups: 'Backup usage',
+        storageTop: 'Largest orphans',
+        storageCleaned: 'Cleaned. Numbers refreshed.',
+        storageCleanConfirm: 'Move orphan attachments to the trash? They can be restored from the Trash tab; nothing is deleted outright.',
+        storageCleanNote: 'Cleaning only moves files to the trash, never deletes them. But if a session log was already deleted, the attachments it referenced will look like orphans — that is the known limit of this detection.',
         refresh: 'Refresh',
         loading: 'Loading…',
         emptyTrash: 'The trash is empty',
@@ -1280,6 +1313,137 @@ window.__ModuleLoader__.load({
             error.length > 0 ? h('div', { style: S.err }, error) : null)
         }
 
+        /* ---------- 分页：存储 ---------- */
+
+        /**
+         * 存储分页：谁在占空间、哪些是真没人用的。
+         *
+         * 刻意**不在打开页面时自动扫描** —— 一次扫描要解压全部会话日志
+         * （实测 775 个附件 / 15 个日志约 1.5 秒）。自动扫会让切到这个分页卡一下，
+         * 而且大多数人只是想看一眼回收站和备份占用。所以先显示轻量信息，
+         * 用户点「扫描孤儿附件」才做重活。
+         */
+        function StoragePanel() {
+          const [report, setReport] = useState(null)
+          const [busy, setBusy] = useState('')
+          const [error, setError] = useState('')
+          const [note, setNote] = useState('')
+          const alive = useRef(true)
+
+          useEffect(() => {
+            alive.current = true
+            return () => { alive.current = false }
+          }, [])
+
+          const scan = async () => {
+            if (busy !== '') return
+            setBusy('scan')
+            setError('')
+            setNote('')
+            try {
+              const parsed = await callJson('/chat-storage scan')
+              if (alive.current) setReport(parsed)
+            } catch (failure) {
+              if (alive.current) setError(String(failure?.message ?? failure))
+            } finally {
+              if (alive.current) setBusy('')
+            }
+          }
+
+          const clean = async () => {
+            if (busy !== '') return
+            setBusy('clean')
+            setError('')
+            setNote('')
+            try {
+              await runCommand(sessionIdOf(), '/chat-storage clean')
+              if (alive.current) setNote(t('storageCleaned'))
+              // 清理完重新扫一遍，让数字回到真实值
+              const parsed = await callJson('/chat-storage scan')
+              if (alive.current) setReport(parsed)
+            } catch (failure) {
+              if (alive.current) setError(String(failure?.message ?? failure))
+            } finally {
+              if (alive.current) setBusy('')
+            }
+          }
+
+          const openAttachments = async () => {
+            if (busy !== '') return
+            setBusy('open')
+            setError('')
+            try {
+              await runCommand(sessionIdOf(), '/chat-storage open')
+            } catch (failure) {
+              if (alive.current) setError(`${t('openDirFailed')}：${String(failure?.message ?? failure)}`)
+            } finally {
+              if (alive.current) setBusy('')
+            }
+          }
+
+          const attachments = report?.attachments
+          const trunk = report?.trash
+          const backups = report?.backups
+          const orphanCount = Number(attachments?.orphanCount ?? 0)
+          const orphanBytes = Number(attachments?.orphanBytes ?? 0)
+          const top = Array.isArray(report?.top) ? report.top : []
+
+          return h('div', null,
+            h('p', { style: S.hint }, t('storageHint')),
+
+            report === null
+              ? h('p', { style: S.hint }, t('storageNotScanned'))
+              : h('div', null,
+                h('div', { style: S.kv },
+                  h('span', { style: S.kvKey }, t('storageAttachments')),
+                  h('span', { style: S.kvVal },
+                    `${attachments?.total ?? 0} 个 · ${formatBytes(attachments?.bytes ?? 0)}`)),
+                h('div', { style: S.kv },
+                  h('span', { style: S.kvKey }, t('storageReferenced')),
+                  h('span', { style: S.kvVal },
+                    `${attachments?.referenced ?? 0} 个${t('storageLogsScanned')}${attachments?.logs ?? 0} 个日志`)),
+                h('div', { style: S.kv },
+                  h('span', { style: S.kvKey }, t('storageOrphans')),
+                  h('span', { ...S.kvVal, color: orphanCount > 0 ? 'var(--dsw-alias-label-warn, #d97757)' : undefined },
+                    orphanCount === 0 ? t('storageNoOrphan') : `${orphanCount} 个 · ${formatBytes(orphanBytes)}`)),
+                h('div', { style: S.kv },
+                  h('span', { style: S.kvKey }, t('storageTrash')),
+                  h('span', { style: S.kvVal }, `${trunk?.count ?? 0} 项 · ${formatBytes(trunk?.bytes ?? 0)}`)),
+                h('div', { style: S.kv },
+                  h('span', { style: S.kvKey }, t('storageBackups')),
+                  h('span', { style: S.kvVal },
+                    backups?.exists === true ? formatBytes(backups.bytes ?? 0) : '—'))),
+
+            top.length > 0
+              ? h('details', { style: { marginTop: '8px' } },
+                h('summary', { style: { cursor: 'pointer', fontSize: '12px', opacity: 0.8 } },
+                  `${t('storageTop')} (${top.length})`),
+                h('ul', { style: { margin: '6px 0 0', paddingLeft: '18px', fontSize: '12px', opacity: 0.75 } },
+                  top.map((item) => h('li', { key: item.name },
+                    h('span', { style: S.mono }, String(item.name).slice(0, 12) + '…'),
+                    ` · ${formatBytes(item.bytes)}`))))
+              : null,
+
+            h('div', { style: S.rowActions },
+              h('button', { type: 'button', style: S.ghost(busy !== ''), disabled: busy !== '', onClick: () => { void scan() } },
+                busy === 'scan' ? t('loading') : t('storageScan')),
+              h('button', { type: 'button', style: S.ghost(busy !== ''), disabled: busy !== '', onClick: () => { void openAttachments() } },
+                t('storageOpen')),
+              h('button', {
+                type: 'button',
+                style: S.danger(busy !== '' || orphanCount === 0),
+                disabled: busy !== '' || orphanCount === 0,
+                onClick: () => {
+                  if (!window.confirm(t('storageCleanConfirm'))) return
+                  void clean()
+                },
+              }, busy === 'clean' ? t('loading') : t('storageClean'))),
+
+            h('p', { style: S.hint }, t('storageCleanNote')),
+            note.length > 0 ? h('div', { style: { ...S.itemMeta, marginTop: '8px' }, role: 'status' }, note) : null,
+            error.length > 0 ? h('div', { style: S.err }, error) : null)
+        }
+
         /* ---------- 分页：体检 ---------- */
 
         function DoctorPanel() {
@@ -1341,16 +1505,17 @@ window.__ModuleLoader__.load({
 
         /* ---------- 设置页外壳：标签导航 ---------- */
 
-        const TABS = ['conversation', 'trash', 'backup', 'guardrails', 'doctor']
+        const TABS = ['conversation', 'trash', 'backup', 'storage', 'guardrails', 'doctor']
 
         function SettingsPage() {
           const [tab, setTab] = useState('conversation')
 
           const panel = tab === 'trash' ? TrashPanel
             : tab === 'backup' ? BackupPanel
-              : tab === 'guardrails' ? GuardrailsPanel
-                : tab === 'doctor' ? DoctorPanel
-                  : ConversationPanel
+              : tab === 'storage' ? StoragePanel
+                : tab === 'guardrails' ? GuardrailsPanel
+                  : tab === 'doctor' ? DoctorPanel
+                    : ConversationPanel
 
           return h('div', { style: S.page },
             h('h2', { style: S.title }, t('title')),
