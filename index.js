@@ -1258,6 +1258,14 @@ export function apply(ctx, config) {
   const createdFolders = new Map()
   /** 会话 id → 上次写交接日志的时间，用来做节流，避免每个事件都重写整份文档。 */
   const logWritten = new Map()
+  /**
+   * 会话 id → 该会话写日志的队尾 Promise。
+   *
+   * 为什么需要它：写日志有四个并发入口（建目录、turn/end、end-seed、手动命令）。
+   * 不排队时同一会话的多次写入会交错，后 rename 的赢但内容未必最新；
+   * 配上唯一 tmp 名之后至少不会互相踩文件，排队之后连内容顺序也自洽。
+   */
+  const logWriteQueue = new Map()
   /** 设置页写入的覆盖值（文件里的），异步载入。 */
   let savedFolder = undefined
   let savedGuardrails = undefined
@@ -2573,6 +2581,32 @@ export function apply(ctx, config) {
     if (cfg.enabled !== true) return
     if (typeof folderPath !== 'string' || folderPath.length === 0) return
 
+    /*
+     * 同一会话的写入串行化。
+     *
+     * 四个入口会并发调用：建目录时、turn/end、end-seed、手动命令。
+     * 除了 tmp 文件名冲突（见下面 temp 的注释），并发还会让两份内容交错落盘 ——
+     * 后 rename 的赢，但中间读到的 events 可能不是最新的。
+     * 排队之后「最后一个写的」必然是最后触发的那个，内容自洽。
+     */
+    const previous = logWriteQueue.get(sessionId) ?? Promise.resolve()
+    const current = previous
+      .catch(() => {})            // 前一个失败不影响这一个
+      .then(() => writeSessionLogNow(sessionId, folderPath))
+    logWriteQueue.set(sessionId, current)
+    try {
+      await current
+    } finally {
+      // 队尾清理：只有自己还是队尾时才删，避免把后来者的链断掉
+      if (logWriteQueue.get(sessionId) === current) logWriteQueue.delete(sessionId)
+    }
+  }
+
+  async function writeSessionLogNow(sessionId, folderPath) {
+    const cfg = currentSessionLog()
+    if (cfg.enabled !== true) return
+    if (typeof folderPath !== 'string' || folderPath.length === 0) return
+
     const controller = service('sessionController')
     if (controller === undefined || typeof controller.inspect !== 'function') return
 
@@ -2613,8 +2647,21 @@ export function apply(ctx, config) {
     }
 
     const target = join(folderPath, '交接日志.md')
-    // 先写临时文件再改名：避免写到一半崩溃留下半截文档
-    const temp = `${target}.tmp`
+    /*
+     * 先写临时文件再改名：避免写到一半崩溃留下半截文档。
+     *
+     * 临时文件名必须**每次唯一**。以前用固定的 `交接日志.md.tmp`，
+     * 而写日志有四个入口（建目录时、turn/end、end-seed、手动命令），
+     * 它们会并发跑：A 写 tmp → B 也写同一个 tmp → A rename 成功（tmp 没了）
+     * → B rename 时 ENOENT。报错长这样：
+     *   rename '...交接日志.md.tmp' -> '...交接日志.md': ENOENT
+     * 这条错误会经 stderr 传给桌面版主进程，宿主一退出就弹「应用意外停止」——
+     * 一次纯属自找的崩溃框。10/27 那份崩溃日志里就是它。
+     *
+     * 唯一名 + 下面那个按会话串行化，两个都做才稳：
+     * 唯一名保证互不踩文件，串行化保证同一会话不会交错覆盖（后写的赢，内容自洽）。
+     */
+    const temp = `${target}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`
     try {
       // 目录可能被人手动删掉，或 --folder= 指到一个还不存在的路径；
       // 这里补一次 mkdir，否则 writeFile 直接 ENOENT，日志永远写不出来。
@@ -3743,6 +3790,213 @@ export function apply(ctx, config) {
       },
     })
   }, 'dsh-steward: /chat-folder-audit')
+
+  /* ------------------------------------------------------------------ */
+  /* 十二、/chat-restart：重载与关闭窗口                                 */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * 「重载进行中/结果」标记的位置。
+   *
+   * 放 $DSH_HOME 下的插件状态文件，不放会话记录也不放凭据 ——
+   * 它是插件自己的东西，和 chat-manager-config.json 同一层。
+   */
+  function restartMarkerPath() {
+    const home = process.env.DSH_HOME
+    if (typeof home !== 'string' || home.length === 0) return undefined
+    return join(home, 'chat-manager-restart.json')
+  }
+
+  /**
+   * 两条路径，代价差了一个数量级，所以刻意分开。
+   *
+   * **reload（重载）**：调 `hmr.reconcileProfile()` —— 这正是 DSH 自己
+   * 在「装插件 / 改插件配置」之后走的那条路。它重扫 profile 与 patch，
+   * 把磁盘上变了的模块逐出并重新 import，跑在 runExclusive 队列里，
+   * 因此和 HMR 的自动重载不会互相踩。进程不退、会话不断、浏览器里的对话原样还在。
+   *
+   * 为什么还要做一次 `clientModules.rebuilt(id)`：`reconcileProfile` 只管**宿主**模块；
+   * 浏览器侧加载的是 client bundle，它的版本号由 `rebuilt()` 发布。
+   * 本地开发是软链，bundle 的 mtime 变了但图不会自己重算 ——
+   * 不补这一步，重载后界面仍是旧代码，用户会以为没生效。
+   *
+   * **quit（关闭窗口）**：不杀进程、不 taskkill，只回报状态。
+   * 真正的动作在客户端：`window.close()`，也就是用户点 ✕ 那条链路 ——
+   * 主进程 `window.on("close")` 里 `preventDefault()` 后隐藏到托盘，全程无弹窗。
+   * 插件做不到「关掉再自动打开」，原因见下面 quit 分支里记的失败史。
+   */
+  ctx.effect(() => {
+    return ctx.commands.register({
+      name: 'chat-restart',
+      description: '操作：reload 重载插件与界面（不断会话），quit 只回报状态（关闭窗口由界面执行）。',
+      handler: async (invocation) => {
+        const action = String(invocation.rawInput ?? '').trim().toLowerCase() || 'reload'
+
+        if (action === 'info') {
+          return {
+            kind: 'success',
+            text: JSON.stringify({
+              hmr: service('hmr') !== undefined,
+              clientModules: service('clientModules') !== undefined,
+              profile: process.env.DSH_PROFILE ?? '',
+              profileDir: process.env.DSH_PROFILE_DIR ?? '',
+              pid: process.pid,
+              platform: process.platform,
+            }),
+          }
+        }
+
+        // 上次重载的结果。页面刷新后用它把「成了还是失败了」显示出来 ——
+        // 因为重载本身会把模块逐出，回话时已经来不及带结果了。
+        if (action === 'last') {
+          const marker = restartMarkerPath()
+          let last
+          try {
+            last = marker === undefined ? undefined : JSON.parse(await readFile(marker, 'utf8'))
+          } catch {
+            last = undefined
+          }
+          return { kind: 'success', text: JSON.stringify({ last: last ?? null }) }
+        }
+
+        if (action === 'reload') {
+          const hmr = service('hmr')
+          if (hmr === undefined) {
+            return {
+              kind: 'error',
+              text: '这个 profile 没有开 HMR，重载不可用；关掉窗口再打开，或手动重启 DSH。',
+            }
+          }
+
+          /*
+           * 先写一条「正在重载」的标记，再**不等它**地把重载甩出去。
+           *
+           * 为什么必须不等：`reconcileProfile()` 会把磁盘上变了的模块逐出并重新 import，
+           * 而这个插件自己的 index.js 几乎总是变过的那一个 —— 于是这次调用会在
+           * 命令 handler 还没返回时就把本插件的模块逐出、fiber 停掉。
+           * 如果在 handler 里 `await` 它，结果就是命令永远不回话、界面卡在「正在重载」。
+           *
+           * 所以顺序是：写标记 → 起一个不 await 的任务 → 立刻回话。
+           * 浏览器侧看到回话后自己刷新页面；刷新后的新页面去读这个标记，
+           * 把结果（成功/失败）显示出来。
+           *
+           * 标记放 $DSH_HOME 下：它是插件自己的状态文件，不碰会话记录也不碰凭据。
+           */
+          const marker = restartMarkerPath()
+          const token = `${Date.now()}-${process.pid}`
+          if (marker !== undefined) {
+            try {
+              await mkdir(dirname(marker), { recursive: true })
+              await writeFile(marker, JSON.stringify({
+                token,
+                phase: 'running',
+                at: Date.now(),
+                pid: process.pid,
+              }), 'utf8')
+            } catch {
+              // 标记写不进去也照常重载，只是界面拿不到结果
+            }
+          }
+
+          // 甩出去，不 await。setTimeout(0) 保证 handler 先把回话交出去。
+          setTimeout(() => {
+            void (async () => {
+              let phase = 'done'
+              let detail = {}
+              try {
+                // 宿主侧：重扫 profile 与 patch，逐出并重新 import 变了的模块。
+                // 必须包在 runExclusive 里 —— 不包的话 reconcileProfile 会直接抛
+                // "HMR profile reconciliation must run inside runExclusive"。
+                const outcome = await hmr.runExclusive(() => hmr.reconcileProfile())
+                detail = {
+                  warnings: Array.isArray(outcome?.warnings) ? outcome.warnings : [],
+                  pending: Array.isArray(outcome?.pending) ? outcome.pending : [],
+                }
+              } catch (error) {
+                phase = 'failed'
+                detail = { error: String(error?.message ?? error) }
+              }
+
+              // 浏览器侧：发布本插件的 client bundle 新版本，让界面能拿到新代码。
+              // 这一步失败不算重载失败 —— 宿主已经好了，界面刷新一次即可。
+              let bundleRev
+              let bundleError
+              try {
+                const modules = service('clientModules')
+                if (modules !== undefined && typeof modules.rebuilt === 'function') {
+                  bundleRev = modules.rebuilt(name)
+                }
+              } catch (error) {
+                bundleError = String(error?.message ?? error)
+              }
+
+              if (marker !== undefined) {
+                try {
+                  await writeFile(marker, JSON.stringify({
+                    token,
+                    phase,
+                    at: Date.now(),
+                    pid: process.pid,
+                    bundleRev: bundleRev ?? null,
+                    bundleError: bundleError ?? null,
+                    ...detail,
+                  }), 'utf8')
+                } catch {
+                  // 结果写不进去不影响重载本身
+                }
+              }
+            })().catch(() => {})
+          }, 0)
+
+          return {
+            kind: 'success',
+            text: JSON.stringify({ ok: true, scheduled: true, token }),
+          }
+        }
+
+        if (action === 'quit') {
+          /*
+           * 「关闭窗口」。
+           *
+           * 这条路我试过三种做法，只有「交给客户端 window.close()」是可靠的，把结论记在这里：
+           *
+           * ① window.close()  → 不退出。主进程的 `window.on("close")` 里
+           *    `event.preventDefault()` 然后 `backgroundNotice.close(hide)`，
+           *    那是**隐藏到托盘**。点了只是窗口消失，进程还在。
+           *
+           * ② process.kill / process.exit → 会弹「应用意外停止」。
+           *    Windows 上 SIGTERM 就是 TerminateProcess，退出码非 0；
+           *    主进程 `child.once("close")` 看到非 0 就 fail() 弹框。
+           *    换 exit(0) 也没用 —— 压住弹窗的条件是主进程自己发起 stop()
+           *    （那个 stopping 标志），插件改不到。
+           *
+           * ③ 起一个游离脚本「杀进程 + 重新拉起」→ **做不到**。
+           *    宿主进程活在 DSH 的 Windows Job Object 里
+           *    （asar 里有 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE），
+           *    `detached: true` 也逃不出 Job：父进程一死，脚本被一起回收，
+           *    于是「脚本还没来得及杀进程就已经死了」。实测就是这个现象：
+           *    界面显示「正在重启」，DSH 纹丝不动。
+           *    要让脚本活得比宿主久，只能用 schtasks / wmic / 服务这类
+           *    **系统级手段**，那超出了插件该碰的范围。
+           *
+           * 所以这里做**诚实的回报**：插件不再假装能自己重开，
+           * 也不假装能替用户结束进程 —— 只把决定交回客户端与用户，
+           * 这样不会出现「以为重启了其实没有」。
+           */
+          return {
+            kind: 'success',
+            text: JSON.stringify({
+              ok: true,
+              method: 'manual',
+              pid: process.pid,
+            }),
+          }
+        }
+
+        return { kind: 'error', text: '用法：/chat-restart reload | quit | info' }
+      },
+    })
+  }, 'dsh-steward: /chat-restart')
 }
 
 ﻿/* ================================================================== */

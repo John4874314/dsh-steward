@@ -48,6 +48,193 @@ This plugin does all five, in **one bundle, one switch, one settings page**.
 
 ## Changelog
 
+### 1.7.5
+
+**The titlebar button is no longer called "Restart" — it is now "Actions".**
+
+1.7.4 already downgraded "Full restart" to "Close window…", but the button still said
+"Restart". That was the last dishonest bit: the name promised a capability the menu no
+longer contains. The menu now holds two different things — "Reload plugins and UI" and
+"Close window…" — so a neutral name is the honest label.
+
+- Chinese button: `⋯ 操作` (was `↻ 重启`)
+- English button: `⋯ Actions` (was `↻ Restart`)
+- Icon changed from `↻` (a cycle arrow, implying "start over") to `⋯` (more actions)
+
+The `/chat-restart` command name is **unchanged** — it is an internal interface, and
+renaming it would break calls already written into other people's scripts and notes.
+What users see is the copy, and that is what changed.
+
+New assertion: neither the Chinese nor the English `restartMenu` label may contain
+"重启" / "restart" any more, so nobody quietly changes it back.
+
+### 1.7.4
+
+**"Full restart" becomes an honest "Close window", because I found out it cannot be done.**
+
+To be clear: **the "Full restart" in 1.7.0 – 1.7.3 was wrong** — three attempts, none correct.
+Recording each failure so nobody walks back into it:
+
+| Attempt | Result | Why |
+| --- | --- | --- |
+| `window.close()` | only hides to tray | main process calls `preventDefault()` in `window.on("close")`, then `backgroundNotice.close(hide)` |
+| `process.kill(SIGTERM)` | crash dialog | a hard kill on Windows, exit code 1; the main process sees a non-zero code in `child.once("close")` and calls `fail()` |
+| `process.exit(0)` | same dialog | the `stopping` flag that suppresses it belongs to the main process |
+| detached powershell "kill + relaunch" | **DSH does not move at all** | the Host lives inside DSH's Windows Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is in the asar); `detached` does not escape a Job, so when the parent dies the script is reclaimed **before it kills anything** |
+
+Making a script outlive the Host would require `schtasks` / `wmic` / a service — system-level
+tooling that is outside what a plugin should touch.
+
+**So the behaviour now is**: the menu item reads "Close window…", calls `window.close()`
+(the only path that shows no crash dialog), hides to the system tray and keeps the process running.
+To actually end DSH, choose Quit from the tray menu. The confirmation text says exactly that.
+
+Also fixed a real bug: the `restartQuit` text key was **defined twice** in the Chinese table.
+
+Still 15 assertions, but the "close window" one now checks: no `process.kill`/`process.exit`/
+`spawn('powershell.exe')`, `window.close()` is used, and **the copy must not promise an automatic reopen**.
+
+### 1.7.3
+
+**"Full restart" now really reopens DSH instead of just closing it.**
+
+1.7.1/1.7.2 used `window.close()`. Reading the main-process source showed it is intercepted:
+
+```js
+window.on("close", (event) => {
+  if (quitting || ...) return;
+  event.preventDefault();          // ← does not close
+  backgroundNotice.close(hide);    // ← just hides to the tray
+});
+```
+
+So clicking it only made the window disappear while the process kept running — you had to
+reopen it yourself. And both `process.kill` and `process.exit` are dead ends (a hard kill
+raises the crash dialog; `exit(0)` does too, because the `stopping` flag that suppresses it
+belongs to the main process).
+
+**What it does now**: the plugin launches a detached powershell that does the whole job —
+
+1. wait 800ms so we can hand back the reply;
+2. kill the DSH process tree matched by the exact exe path (never another program of the same name);
+3. **poll until the old process is really gone** (up to 15 seconds);
+4. relaunch with the same exe.
+
+Step 3 is not optional. DSH holds a single-instance lock: if you start the new process before
+the old one has fully exited, the new instance decides it is not the owner, hands the lock to
+the old one and quits — which looks like "I clicked restart and the window flashed and vanished".
+
+The Host still **does not kill itself**: when the main process dies, the Host receives the IPC
+`disconnect` and calls `stop()`, so session logs are never truncated.
+
+Still 15 assertions, but the "full restart" one now checks the new design: no
+`process.kill`/`process.exit`, a script must be spawned, and **it must poll for the exit**.
+
+### 1.7.2
+
+**Fix for a long-standing bug: concurrent writes to "交接日志.md" could push DSH into its crash dialog.**
+
+This bug predates the restart feature — it is in the October 27 crash log, from before the
+restart button existed. The dialog itself is DSH's own (the main process shows it whenever the
+Host exits with code 1), but **this error is what triggered it**:
+
+```
+rename '...交接日志.md.tmp' -> '...交接日志.md': ENOENT
+```
+
+The cause: there are four concurrent entry points that write the log (folder creation,
+`turn/end`, `end-seed`, and the manual command), and the old code used a **fixed**
+`交接日志.md.tmp`:
+
+```
+A writes tmp → B writes the same tmp → A renames (tmp is gone) → B's rename fails with ENOENT
+```
+
+That error goes to stderr, reaches the desktop main process, and pops
+"The application failed to start or stopped unexpectedly" the moment the Host exits.
+
+**The fix needs both steps; one is not enough** (this came out of stress testing):
+
+| Approach | Failures over 8 concurrent writers × 20 rounds |
+| --- | --- |
+| ① fixed tmp name (the original) | 120 × `ENOENT` |
+| ② unique tmp name only | still 91 × `EPERM` |
+| ③ unique tmp name + per-session queue | **0** |
+
+② still fails because on Windows several `rename` calls racing to the same target conflict
+(`EPERM`). So both are done now: the tmp name carries pid + timestamp + random suffix, and
+writes for one session are queued (`logWriteQueue`), so a later writer sees the earlier one's
+content and the file stays self-consistent.
+
+New `test/log-race.test.mjs`: it actually runs the three-way stress comparison and reads the
+source to confirm approach ③ is what ships. Assertions went from 13 to **15**.
+
+### 1.7.1
+
+**Fixes two defects from 1.7.0: the restart button overlapped "Application", and Full restart popped a crash dialog.**
+
+Both were mine, from the previous release, and both have simple causes.
+
+**① The button overlapped the native menu.** The first implementation measured the native
+menubar position once, at mount — and at that moment it usually had not been mounted yet
+(the preload script creates it after `DOMContentLoaded`), so it fell back to the fixed
+`left: 48px`, which lands exactly on "Application". No resize fires when the menubar appears,
+so the offset stayed. **Maximising the window fixed it**, because that fires a resize and
+re-measures.
+
+There are now three safeguards: eight re-measures right after mount (covering "the menubar
+appears slightly later"), a `MutationObserver` on the body (re-measure as soon as it mounts),
+and resize + ResizeObserver (language switches), **and it renders nothing when it cannot
+measure** — better to appear 100ms late than to guess a position on top of the native menu.
+
+**② Full restart popped "The application failed to start or stopped unexpectedly".** It used
+`process.kill(SIGTERM)`, which on Windows is `TerminateProcess`, so the exit code is **1**.
+The desktop main process sees a non-zero code in `child.once("close")` and calls `fail()`,
+which shows the dialog.
+
+`process.exit(0)` does not help either: that `fail()` is guarded by
+`if (!this.failureReported && !this.stopping)`, and only the main process's own `stop()`
+sets `stopping` — a plugin cannot reach it.
+
+The correct route is **closing the window**, which is exactly what the user's ✕ does:
+`window-all-closed → app.quit() → before-quit → finishQuit → backend.close() → host.stop()`,
+with no dialog anywhere. So the Host now only reports whether the window route is available;
+the actual action is `window.close()` on the client.
+
+Assertions went from 11 to **13**, one new assertion pinning each of the two defects.
+
+### 1.7.0
+
+**The titlebar now has a "↻ Restart": soft reload reloads plugins and the UI; only a full restart quits DSH.**
+
+Needing to restart DSH to see plugin code changes was always awkward. There is now a button
+to the right of the "Application Edit View" row in the top-left of the window:
+
+| Menu item | What it does | Ends the session? |
+| --- | --- | --- |
+| Reload plugins and UI | `hmr.reconcileProfile()` re-scans the profile and patch, evicts and re-imports changed modules; then publishes a new client bundle version and refreshes the page | **No** |
+| Full restart… | The Host process exits gracefully (the same as quitting DSH yourself); asks for confirmation | Yes, and you reopen it yourself |
+
+Two implementation traps worth recording:
+
+- **Reload must reply first and work afterwards.** `reconcileProfile()` evicts changed modules —
+  and this plugin's own `index.js` is almost always one of them. Awaiting it inside the command
+  handler would evict the module before the handler returns, so the command never replies and the
+  UI sticks on "Reloading…". The handler writes a status marker, throws the reload over the wall,
+  and returns immediately; after the refresh it reads the result back.
+- **Do not spawn a new `DeepSeek Harness.exe`.** It would fight the current instance for the
+  single-instance lock, producing "the old window is still here and the new one flashed away".
+  `app.relaunch()` lives in the Electron main process, which a plugin cannot reach, so
+  "Full restart" only does the graceful exit.
+
+The button only appears on the desktop build (the window menubar itself is mounted by the
+Electron preload script), so the Web GUI opened in a plain browser does not gain a button that
+does not match its window.
+
+Assertions went from 10 to **11**: the new one covers both "the reload is thrown out of the
+handler" and "none of the five existing registrations went missing".
+
+
 ### 1.4.1
 
 **Fix: right-click did nothing on an `@` file reference (the `交接日志.md` chip in the screenshot).**
@@ -141,7 +328,7 @@ Replace `<profile>` with your profile name (usually `desktop` for the desktop ap
 ### Option 1 — tarball (recommended, no git needed)
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.6.3
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.7.5
 ```
 
 No local `git` required, and no direct `github.com:443` access required — it only

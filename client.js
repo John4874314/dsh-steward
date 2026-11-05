@@ -223,6 +223,25 @@ window.__ModuleLoader__.load({
         noFolderTag: '仅记录',
         kindFile: '文件',
 
+        /* ---- 标题栏「操作」 ---- */
+        /*
+         * 按钮名刻意保持中性：里面既有「重载」，也有「关闭窗口」，
+         * 叫「重启」会承诺一件插件做不到的事（见 index.js 里那段失败史）。
+         */
+        restartMenu: '操作',
+        restartReload: '重载插件与界面',
+        restartReloadHint: '不退出、不断对话。改了插件代码或配置后用这个。',
+        restartQuit: '关闭窗口…',
+        restartQuitHint: '隐藏到系统托盘，进程继续跑；从托盘菜单选「退出」才真正结束。',
+        restartWorking: '正在重载…',
+        restartDone: '已重载，界面即将刷新。',
+        restartNoHmr: '这个 profile 没开 HMR，重载不可用。',
+        restartFailed: '重载失败',
+        restartQuitConfirm: '这会把 DSH 窗口关闭并隐藏到系统托盘，进程继续运行。\n\n要从托盘菜单里选「退出」才能真正结束 DSH。\n\n只想让改过的插件生效的话，用「重载插件与界面」就够了，不用关窗口。\n\n确定关闭窗口吗？',
+        restartQuitDone: '已关闭窗口，DSH 仍在托盘里运行。',
+        restartQuitNoWindow: '当前是纯 Web 服务，没有窗口可关；请到启动它的终端里停止进程。',
+        restartQuitFailed: '关闭失败',
+
         backupHint: '写入 AGENTS.md 等操作前会自动备份到这里。备份会一直留着，占你的磁盘，所以由你自己决定清不清。',
         backupDir: '位置',
         backupUsage: '占用',
@@ -430,6 +449,21 @@ window.__ModuleLoader__.load({
         withFolderTag: 'with folder',
         noFolderTag: 'record only',
         kindFile: 'file',
+
+        /* ---- titlebar "Actions" ---- */
+        restartMenu: 'Actions',
+        restartReload: 'Reload plugins and UI',
+        restartReloadHint: 'Stays open, keeps your conversations. Use after plugin code or config changes.',
+        restartQuit: 'Close window…',
+        restartQuitHint: 'Hides to the system tray; the process keeps running. Quit from the tray menu to end DSH.',
+        restartWorking: 'Reloading…',
+        restartDone: 'Reloaded. The page is about to refresh.',
+        restartNoHmr: 'HMR is off in this profile, so reload is unavailable.',
+        restartFailed: 'Reload failed',
+        restartQuitConfirm: 'This closes the DSH window and hides it to the system tray; the process keeps running.\n\nQuit from the tray menu to actually end DSH.\n\nIf you only need changed plugins to take effect, "Reload plugins and UI" is enough and needs no closing.\n\nClose the window?',
+        restartQuitDone: 'Window closed — DSH is still running in the tray.',
+        restartQuitNoWindow: 'This is a plain Web service with no window to close; stop the process from the terminal that started it.',
+        restartQuitFailed: 'Quit failed',
 
         backupHint: 'Writes to AGENTS.md and similar files are backed up here first. Backups stay on disk and take space, so clearing them is your call.',
         backupDir: 'Location',
@@ -3244,6 +3278,325 @@ window.__ModuleLoader__.load({
 
         adaptBetterSidebar()
 
+        /* ---------------- 标题栏「操作」 ---------------- */
+
+        /** 刷新前打个标记，刷新后据此去问宿主「上次重载成没成」。 */
+        const RESTART_PENDING_KEY = 'dsh-steward:restart-pending'
+
+        /**
+         * 为什么挂在标题栏的菜单栏里（「应用 编辑 视图」那一行）。
+         *
+         * 用户要的是「像这类操作用起来顺手的位置」，而那一行是窗口里
+         * 最稳定的一个落点。但它是 Electron 预加载脚本用 **闭合的 Shadow DOM**
+         * 挂出来的（`dsh-app://shell` 的 preload，见 `installWindowsMenu`），
+         * 插件拿不到它的引用，也就插不进去一个真按钮。
+         *
+         * 所以做法是：**在它右边贴一个自己的按钮**，位置用同一套 CSS 变量算出来，
+         * 视觉上与那三个菜单项连成一体；点开是插件自己的下拉菜单。
+         *
+         * 三条硬约束，保证「不影响其它功能」：
+         *  1. 只在桌面版（`<html data-platform>` 存在）挂 —— 纯浏览器打开时不出现，
+         *     不会凭空多一个和窗口菜单对不上的按钮。
+         *  2. 高度压在 titlebar 高度内、`z-index` 低于原生菜单的 1100，
+         *     不遮「应用/编辑/视图」，也不挡窗口拖动区以外的任何东西。
+         *  3. 整块用 try/catch 包住：拿不到挂载点就安静地不出现，
+         *     绝不影响设置页、右键菜单等既有功能。
+         */
+        function RestartMenubar() {
+          const [open, setOpen] = useState(false)
+          const [busy, setBusy] = useState('')
+          const [note, setNote] = useState('')
+          const [anchor, setAnchor] = useState({ left: 0, height: 32, visible: false })
+          const hostRef = useRef(null)
+
+          /**
+           * 量出原生菜单栏的右边缘，把自己的按钮贴到它后面。
+           *
+           * 为什么必须量而不是算：菜单栏是 `position:fixed` 的 shadow host，
+           * 宽度由里面按钮的文字决定 —— 中文「应用 编辑 视图」和英文
+           * 「Application Edit View」差好几十像素，插件在闭包外读不到它。
+           *
+           * **必须反复量，不能只量一次。** 之前的版本只在挂载时跑一次，
+           * 而那一刻原生菜单栏往往还没挂上（它是预加载脚本在 DOMContentLoaded
+           * 之后才创建的），于是退回 `left: 48px` 正好压在「应用」上；
+           * 等菜单栏出现时没有 resize 事件，错位就一直留着 ——
+           * 这就是「有时候会和应用重合，放大窗口才恢复正常」的原因。
+           *
+           * 现在三重保障：
+           *  1. 挂载后连续几帧重量（覆盖「菜单栏稍后才出现」）；
+           *  2. MutationObserver 盯着 body，菜单栏一挂上就重量；
+           *  3. resize + ResizeObserver 覆盖语言切换和窗口缩放。
+           */
+          useEffect(() => {
+            let disposed = false
+            let lastLeft = -1
+
+            const measure = () => {
+              if (disposed) return
+              try {
+                const host = document.querySelector('[data-windows-menu]')
+                const styles = getComputedStyle(document.documentElement)
+                const start = parseFloat(styles.getPropertyValue('--dsh-windows-menu-start')) || 48
+                const barHeight = parseFloat(styles.getPropertyValue('--dsh-windows-titlebar-height')) || 32
+
+                let left
+                if (host === null) {
+                  // 菜单栏还没出现：先藏起来，而不是猜一个位置压在它上面
+                  left = null
+                } else {
+                  const rect = host.getBoundingClientRect()
+                  left = rect.width > 0 ? rect.right + 6 : null
+                }
+
+                if (left === null) {
+                  // 量不到就藏起来。宁可晚 100ms 出现，也不要压在「应用」上。
+                  setAnchor((prev) => (prev.visible === false ? prev : { ...prev, visible: false }))
+                  return
+                }
+                if (Math.abs(left - lastLeft) < 0.5) return
+                lastLeft = left
+                setAnchor({ left, height: barHeight, visible: true })
+              } catch {
+                setAnchor((prev) => ({ ...prev, visible: false }))
+              }
+            }
+
+            measure()
+            // 1) 连续几帧重量：覆盖「本组件比菜单栏先挂载」的时序
+            const raf = []
+            for (let i = 0; i < 8; i += 1) {
+              raf.push(setTimeout(measure, 50 * (i + 1)))
+            }
+
+            // 2) 菜单栏一出现就重量
+            let observer
+            try {
+              observer = new MutationObserver(measure)
+              observer.observe(document.body, { childList: true, subtree: false })
+            } catch { /* 观察不了就只靠定时 */ }
+
+            // 3) 窗口缩放 / 语言切换
+            window.addEventListener('resize', measure)
+            let ro
+            try {
+              ro = new ResizeObserver(measure)
+              const host = document.querySelector('[data-windows-menu]')
+              if (host !== null) ro.observe(host)
+            } catch { /* 忽略 */ }
+
+            return () => {
+              disposed = true
+              for (const id of raf) clearTimeout(id)
+              window.removeEventListener('resize', measure)
+              try { observer?.disconnect() } catch { /* 忽略 */ }
+              try { ro?.disconnect() } catch { /* 忽略 */ }
+            }
+          }, [])
+
+          // 点外面 / 按 Esc 收起，和原生菜单的手感一致
+          useEffect(() => {
+            if (!open) return undefined
+            const onDown = (event) => {
+              const host = hostRef.current
+              if (host !== null && event.target instanceof Node && host.contains(event.target)) return
+              setOpen(false)
+            }
+            const onKey = (event) => { if (event.key === 'Escape') setOpen(false) }
+            window.addEventListener('mousedown', onDown, true)
+            window.addEventListener('keydown', onKey, true)
+            return () => {
+              window.removeEventListener('mousedown', onDown, true)
+              window.removeEventListener('keydown', onKey, true)
+            }
+          }, [open])
+
+          // 刷新回来之后，把上次重载的结果补显示出来。
+          // 只在上次确实点了「重载」时做（sessionStorage 标记），平时打开页面不会多问一次。
+          useEffect(() => {
+            let pending = false
+            try {
+              pending = window.sessionStorage.getItem(RESTART_PENDING_KEY) === '1'
+              if (pending) window.sessionStorage.removeItem(RESTART_PENDING_KEY)
+            } catch {
+              pending = false
+            }
+            if (!pending) return undefined
+            let alive = true
+            void (async () => {
+              // 给宿主一点时间把标记写完（它是在模块被逐出之后才写的）
+              await new Promise((resolve) => setTimeout(resolve, 1200))
+              try {
+                const sessionId = sessionIdOf()
+                if (sessionId === undefined || !alive) return
+                const text = await runCommand(sessionId, '/chat-restart last')
+                if (!alive) return
+                const last = JSON.parse(String(text ?? '{}'))?.last
+                if (last === null || last === undefined) return
+                if (last.phase === 'failed') {
+                  setNote(`${t('restartFailed')}：${String(last.error ?? '')}`)
+                } else if (last.phase === 'done') {
+                  setNote(t('restartDone'))
+                }
+                setOpen(true)
+              } catch {
+                // 读不到就算了，不打扰用户
+              }
+            })()
+            return () => { alive = false }
+          }, [])
+
+          const reload = async () => {
+            if (busy !== '') return
+            setBusy('reload')
+            setNote('')
+            try {
+              const sessionId = sessionIdOf()
+              if (sessionId === undefined) throw new Error(t('restartFailed'))
+              // 这条命令会**立刻回话**然后才在后台重载 —— 因为重载会把本插件模块逐出，
+              // 回话晚了就永远等不到（见宿主侧注释）。
+              await runCommand(sessionId, '/chat-restart reload')
+              setNote(t('restartDone'))
+              // 稍等一下让提示能被看见，然后刷新页面拿新的 client bundle。
+              // 刷新后 RestartMenubar 会调 /chat-restart last 把结果补显示出来。
+              setTimeout(() => {
+                try { window.sessionStorage.setItem(RESTART_PENDING_KEY, '1') } catch { /* 忽略 */ }
+                try { window.location.reload() } catch { /* 忽略 */ }
+              }, 600)
+            } catch (failure) {
+              const message = String(failure?.message ?? failure)
+              setNote(message.includes('no-hmr') || message.includes('HMR')
+                ? t('restartNoHmr')
+                : `${t('restartFailed')}：${message}`)
+            } finally {
+              setBusy('')
+            }
+          }
+
+          const quit = async () => {
+            if (busy !== '') return
+            if (typeof window.confirm === 'function' && !window.confirm(t('restartQuitConfirm'))) return
+            setBusy('quit')
+            setNote('')
+            try {
+              const sessionId = sessionIdOf()
+              if (sessionId === undefined) throw new Error(t('restartQuitFailed'))
+              /*
+               * 诚实的退出：先把「我要退出了」告诉宿主（它可能要做收尾），
+               * 然后走**用户点 ✕ 那条链路**。
+               *
+               * 为什么是 window.close()：主进程的 close 处理会 preventDefault 并
+               * 把窗口隐藏到托盘（第一次还会问一次「确认后台运行」）。这是 DSH
+               * 唯一一条不弹崩溃框的关闭路径 —— 进程会留在托盘里继续跑，
+               * 从托盘菜单选「退出」才是真正结束。
+               *
+               * 我不再假装能自动重开：宿主活在 DSH 的 Windows Job Object 里，
+               * 它启动的任何脚本都会随它一起被回收，所以「杀进程 + 拉起新进程」
+               * 这条路在插件层面走不通（试过，见宿主侧注释）。
+               */
+              const text = await runCommand(sessionId, '/chat-restart quit')
+              JSON.parse(String(text ?? '{}'))
+              setNote(t('restartQuitDone'))
+              setTimeout(() => {
+                try { window.close() } catch { /* 忽略 */ }
+              }, 300)
+            } catch (failure) {
+              setNote(`${t('restartQuitFailed')}：${String(failure?.message ?? failure)}`)
+            } finally {
+              setBusy('')
+            }
+          }
+
+          const item = (label, hint, onClick, danger) => h('button', {
+            type: 'button',
+            role: 'menuitem',
+            disabled: busy !== '',
+            onClick,
+            style: {
+              display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '1px',
+              width: '100%', padding: '7px 10px', borderRadius: '7px', border: 'none',
+              background: 'transparent', font: 'inherit', fontSize: '12.5px', textAlign: 'left',
+              cursor: busy !== '' ? 'progress' : 'pointer',
+              color: danger ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-primary)',
+            },
+          },
+          h('span', null, label),
+          h('span', {
+            style: { fontSize: '11px', lineHeight: '15px', color: 'var(--dsw-alias-label-secondary)' },
+          }, hint))
+
+          // 量不到原生菜单栏就不渲染 —— 宁可晚 100ms 出现，
+          // 也不要猜一个位置压在「应用」上（这正是之前重合的原因）。
+          if (anchor.visible !== true) return null
+
+          return h('div', {
+            ref: hostRef,
+            // 只做定位外壳，真正的按钮/菜单都在这层里，样式全部内联，
+            // 不写进全局样式表，避免和窗口菜单的 :host 规则互相影响。
+            style: {
+              position: 'fixed',
+              top: 0,
+              left: `${anchor.left}px`,
+              height: `${anchor.height}px`,
+              display: 'flex',
+              alignItems: 'center',
+              zIndex: 1099,           // 低于原生菜单的 1100，不盖住它
+              WebkitAppRegion: 'no-drag',
+              font: 'inherit',
+            },
+          },
+          h('button', {
+            type: 'button',
+            'aria-haspopup': 'menu',
+            'aria-expanded': open,
+            title: t('restartMenu'),
+            onClick: () => setOpen((value) => !value),
+            style: {
+              height: '28px', padding: '0 10px', border: 0, borderRadius: '6px',
+              background: open ? 'var(--dsw-alias-bg-overlay)' : 'transparent',
+              color: 'var(--dsw-alias-label-secondary)',
+              font: 'inherit', fontSize: '12px', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: '5px',
+            },
+          },
+          h('span', { 'aria-hidden': true, style: { fontSize: '12px' } }, '\u22EF'),
+          h('span', null, t('restartMenu'))),
+
+          open
+            ? h('div', {
+              role: 'menu',
+              style: {
+                position: 'fixed',
+                top: `${anchor.height}px`,
+                left: `${anchor.left}px`,
+                minWidth: '210px',
+                padding: '5px',
+                borderRadius: '10px',
+                border: '1px solid var(--dsw-alias-border-l1)',
+                background: 'var(--dsw-alias-bg-overlay)',
+                boxShadow: '0 10px 26px -8px rgba(0, 0, 0, 0.32)',
+                zIndex: 1099,
+                display: 'flex', flexDirection: 'column', gap: '2px',
+              },
+            },
+            item(
+              busy === 'reload' ? t('restartWorking') : t('restartReload'),
+              t('restartReloadHint'),
+              () => { void reload() },
+              false,
+            ),
+            item(t('restartQuit'), t('restartQuitHint'), () => { void quit() }, true),
+            note.length > 0
+              ? h('div', {
+                role: 'status',
+                style: {
+                  padding: '6px 10px 3px', fontSize: '11.5px', lineHeight: '16px',
+                  color: 'var(--dsw-alias-label-secondary)',
+                },
+              }, note)
+              : null)
+            : null)
+        }
+
         /* ---------------- 注册 ---------------- */
 
         ctx.slots.inject('settings.section', () => ctx.slots.register({
@@ -3280,6 +3633,29 @@ window.__ModuleLoader__.load({
           id: 'dsh-steward-file-menu',
           order: 950,
         }, FileContextMenu))
+
+        /**
+         * 标题栏「操作」。
+         *
+         * 只有桌面版才有那行窗口菜单（`<html data-platform>` 由 Electron 预加载脚本写入），
+         * 纯浏览器打开的 Web GUI 里没有，也就不挂 —— 免得凭空多一个和窗口对不上的按钮。
+         * 这一步判断失败时一律不挂：多一个按钮是小事，挡住原生菜单才是大事。
+         */
+        let desktopShell = false
+        try {
+          desktopShell = document.documentElement.dataset.platform !== undefined
+            && typeof window.__DSH_BOOT__ !== 'undefined'
+        } catch {
+          desktopShell = false
+        }
+
+        if (desktopShell) {
+          ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+            name: 'shell.overlay',
+            id: 'dsh-steward-restart',
+            order: 100,          // 排在最前，位置由它自己的 fixed 定位决定
+          }, RestartMenubar))
+        }
       },
     }
   },

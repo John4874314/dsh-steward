@@ -160,6 +160,130 @@ test('icon 满足 DSH 的元信息约束（类型 / 大小 / 在包内）', () =
  *   - 插件目录那份是"装好之后怎么用"的简版
  * 我曾经两次把后者整个复制到前者上，把落地页冲掉了。这条断言就是防这个。
  */
+test('手动重启：命令与菜单都在，且重载不阻塞在 handler 里', () => {
+  const host = read('index.js')
+
+  // 宿主：命令注册与三个分支
+  assert.ok(host.includes("name: 'chat-restart'"), 'index.js 没有注册 /chat-restart')
+  for (const branch of ["action === 'reload'", "action === 'quit'", "action === 'last'"]) {
+    assert.ok(host.includes(branch), `index.js 缺少 ${branch} 分支`)
+  }
+
+  // 关键回归点：reconcileProfile 会把本插件模块逐出，
+  // 所以它**不能**被 await 在命令 handler 里 —— 那样命令永远不回话。
+  // 断言真正的调用（`hmr.reconcileProfile()`，注释里提到的裸 `reconcileProfile()` 不算）
+  // 出现在 setTimeout 之后，即被甩出了 handler。
+  const reloadBlock = host.slice(host.indexOf("action === 'reload'"))
+  const setTimeoutAt = reloadBlock.indexOf('setTimeout(')
+  const reconcileAt = reloadBlock.indexOf('hmr.reconcileProfile()')
+  assert.ok(setTimeoutAt > 0, 'reload 分支里找不到 setTimeout：重载没有被甩出 handler')
+  assert.ok(reconcileAt > 0, 'reload 分支里找不到 hmr.reconcileProfile() 调用')
+  assert.ok(reconcileAt > setTimeoutAt,
+    'hmr.reconcileProfile() 出现在 setTimeout 之前：会在 handler 里 await，导致命令不回话')
+
+  // 必须包在 runExclusive 里，否则 reconcileProfile 直接抛
+  assert.ok(host.includes('runExclusive('), 'index.js 没有用 hmr.runExclusive 包住 reconcileProfile')
+
+  // 客户端：菜单与二次确认
+  assert.ok(client.includes("id: 'dsh-steward-restart'"), 'client.js 没有注册重启菜单')
+  assert.ok(client.includes("'/chat-restart reload'"), 'client.js 没有调用 reload')
+  assert.ok(client.includes("'/chat-restart quit'"), 'client.js 没有调用 quit')
+  assert.ok(client.includes('restartQuitConfirm'), 'client.js 缺少完全重启的二次确认文案')
+
+  // 原有的五个注册一个都不能少（这条防的是"加功能时把别的挤掉"）
+  for (const id of [
+    'dsh-steward-settings',
+    'dsh-steward-delete',
+    'dsh-steward-open-folder',
+    'dsh-steward-dialog',
+    'dsh-steward-file-menu',
+  ]) {
+    assert.ok(client.includes(`id: '${id}'`), `client.js 原有的 ${id} 不见了`)
+  }
+})
+
+/*
+ * 这一条记录的是「完全重启」这条路的完整失败史，防止以后有人再走回去：
+ *
+ * ① process.kill(SIGTERM) —— Windows 上是强杀，退出码 1，
+ *    主进程 `child.once("close")` 看到非 0 立刻 fail()，弹「应用意外停止」。
+ * ② process.exit(0) —— 一样弹：压住弹窗的 stopping 标志只有主进程自己能改。
+ * ③ 起游离 powershell「杀进程 + 重新拉起」—— **做不到**。
+ *    宿主活在 DSH 的 Windows Job Object 里（asar 有
+ *    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE），detached 也逃不出 Job：
+ *    父进程一死脚本被一起回收，于是「还没杀进程就已经死了」。
+ *    实测现象就是：界面显示「正在重启」，DSH 纹丝不动。
+ *
+ * 结论：插件层面做不成真重启，所以现在只做**诚实的关闭窗口**
+ * （window.close() → 主进程隐藏到托盘），文案也如实说明。
+ */
+test('关闭窗口：插件不自杀、不假装能自动重启，文案必须诚实', () => {
+  const host = read('index.js')
+
+  // 去掉注释行后再检查，避免注释里提到这些名字就误报
+  const codeOnly = host
+    .split('\n')
+    .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+    .join('\n')
+  assert.ok(!/process\.kill\s*\(/.test(codeOnly),
+    'index.js 里出现了 process.kill：Windows 上是强杀，会触发桌面版崩溃弹窗')
+  assert.ok(!/process\.exit\s*\(/.test(codeOnly),
+    'index.js 里出现了 process.exit：主进程会当成异常退出并弹崩溃框')
+
+  // 不许再假装能自动重启
+  assert.ok(!host.includes("method: 'relaunch'"),
+    'index.js 又出现了 relaunch：Job Object 会带走子进程，这条路走不通')
+  assert.ok(!/spawn\('powershell\.exe'/.test(host),
+    'index.js 又起了 powershell 重启脚本：它活不过宿主')
+
+  // 宿主只回报，动作在客户端
+  assert.ok(host.includes("method: 'manual'"), 'quit 分支应回报 manual（交给用户决定何时重开）')
+
+  // 客户端走 window.close()（= 隐藏到托盘，不弹崩溃框）
+  const clientCode = client
+    .split('\n')
+    .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+    .join('\n')
+  assert.ok(/window\.close\s*\(/.test(clientCode),
+    'client.js 没有 window.close()：这是唯一不弹崩溃框的关闭路径')
+  assert.ok(client.includes('/chat-restart quit'), 'client.js 没有调用 quit')
+
+  // 文案不能承诺「自动重新打开」
+  assert.ok(!client.includes('自动重新打开'),
+    '文案承诺了自动重新打开：做不到就别这么写')
+  assert.ok(!/reopen it automatically/i.test(client),
+    'the copy promises an automatic reopen that does not happen')
+
+  /*
+   * 按钮名不许再叫「重启」。
+   *
+   * 1.7.4 把「完全重启」降级成「关闭窗口…」之后，按钮仍写着「重启」，
+   * 那是在承诺一件插件做不到的事（见上一条测试记录的失败史）。
+   * 现在菜单里既有「重载」也有「关闭窗口」，所以用一个中性名「操作」。
+   */
+  const menuLabels = [...client.matchAll(/restartMenu: '([^']*)'/g)].map((m) => m[1])
+  assert.strictEqual(menuLabels.length, 2, 'restartMenu 应只有中英两份')
+  assert.ok(!/重启/.test(menuLabels[0]),
+    `菜单按钮仍叫「${menuLabels[0]}」：里面已没有重启功能，名字必须中性`)
+  assert.ok(!/restart/i.test(menuLabels[1]),
+    `the menu button is still called "${menuLabels[1]}" after the restart feature was removed`)
+})
+
+/*
+ * 这一条拦的是另一次事故：按钮只在挂载时量了一次位置，
+ * 那时原生菜单栏往往还没挂上，于是退回固定值，正好压在「应用」上；
+ * 等菜单栏出现时没有 resize，错位一直留着 —— 表现为「有时候重合，放大窗口才好」。
+ */
+test('重启按钮的定位必须持续重测，量不到就不渲染', () => {
+  assert.ok(client.includes('MutationObserver'),
+    '缺少 MutationObserver：菜单栏稍后挂上时不会重量')
+  assert.ok(/for \(let i = 0; i < 8; i \+= 1\)/.test(client),
+    '缺少挂载后的连续重量：菜单栏比本组件晚出现时会错位')
+  assert.ok(client.includes('if (anchor.visible !== true) return null'),
+    '量不到菜单栏时仍在渲染：会猜一个位置压在原生菜单上')
+  assert.ok(client.includes('visible: false'), '初始状态应不可见')
+})
+
 test('仓库 README 仍是 GitHub 落地页，没被插件内部的简版覆盖', () => {
   const zh = read('README.md')
   const en = read('README.en.md')
