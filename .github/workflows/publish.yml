@@ -56,5 +56,10 @@ jobs:
 
       # ---------- 发布：用 OIDC，不需要任何 token ----------
       - name: Publish to npm
-        # --provenance 会生成公开可验证的构建来源证明，包页面显示 Provenance 徽章
-        run: npm publish --provenance --access public
+        # --provenance 会生成公开可验证的构建来源证明，包页面显示 Provenance 徽章。
+        #
+        # 刻意**不加** --access public：这个包名没有 scope（不是 @org/name），
+        # 无 scope 包本来就是 public，而 npm 的发布接口收到 access 字段会返回 404
+        # （不是 403），日志里看起来像「没权限」，实际是参数不被接受。
+        # 第一次跑就是踩了这个，见 commit 后的日志。
+        run: npm publish --provenance
