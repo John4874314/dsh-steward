@@ -9,8 +9,8 @@
 > 按文件类型分组的右键菜单、网址右键菜单，
 > 外加一套**由你手动开启**的、写进全局 `AGENTS.md` 的运行守则。
 
-> **尚未发布到 npm。** 本项目不提供 npm 包，上面的徽章里也没有 npm 版本号 ——
-> 请用「安装」一节的 tarball 方式，`dsh plugin add dsh-steward` 解析不到任何东西。
+> **已发布到 npm。** 也可以直接从 npm 装：`dsh plugin add dsh-steward`。
+> 不想依赖 npm 的用下面「安装」一节的 tarball 方式，两者内容一致。
 
 🌏 **中文** · [English](./README.en.md)
 
@@ -836,7 +836,7 @@ E:\islet\docs\交接文档.md
 - 测试只有 9 条契约断言，覆盖「名字一致 / 默认值 / 模块能加载 / icon 元信息」，
   **不覆盖 UI 交互**。
 - Windows 优先开发，非 Windows 的三项功能是直接隐藏而非降级实现。
-- 尚未发布 npm，只能从 git / tarball 装。
+- npm 上只有源码包，没有编译产物；装完仍需重启 DSH 才生效。
 
 ## 配置
 

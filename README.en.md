@@ -9,8 +9,9 @@
 > type-aware right-click file actions, a right-click menu for links, and a three-rule safety
 > baseline that you opt into explicitly before it touches the global `AGENTS.md`.
 
-> **Not published to npm.** There is no npm package, and the badges above carry no npm version —
-> install with the tarball command in "Install". `dsh plugin add dsh-steward` resolves nothing.
+> **Published to npm.** You can also install straight from the registry with
+> `dsh plugin add dsh-steward`. Prefer not to depend on npm? Use the tarball command
+> under "Install" — the contents are identical.
 
 🌏 [中文](./README.md) · **English**
 
@@ -286,8 +287,8 @@ That bug was caught by the new `test/chip-detect.test.mjs`.
 - **Added a minimal test suite and CI.** `npm test` runs 6 assertions; the first one is
   "package.json / patch insert / client module id must all agree". Verified that this test fails
   if you put `@local/` back.
-- **Dropped the npm badge** (the package is not on npm, so the badge was false) and added the
-  platform support matrix.
+- **Dropped the npm badge** (the package was not on npm at the time, so the badge was false) and
+  added the platform support matrix. *Superseded: the package is now published on npm.*
 
 ### 1.2.0
 
@@ -659,7 +660,7 @@ it is trusted. Here is exactly what it does.
 - Only 6 contract assertions, covering name consistency / defaults / module loading —
   **UI interaction is not covered**.
 - Windows-first: three features are hidden on other platforms rather than reimplemented.
-- Not on npm; install from git or a tarball.
+- The npm package ships source only, no build output; a DSH restart is still required.
 
 ## Configuration
 
