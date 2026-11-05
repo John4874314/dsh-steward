@@ -23,6 +23,24 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # ---------- 关键：清掉 setup-node 塞进来的占位 token ----------
+      # registry-url 会让 setup-node 往 .npmrc 写一行
+      #   //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
+      # 并注入一个占位值（日志里显示 XXXXX-XXXXX-XXXXX-XXXXX）。
+      # npm 会拿这个假 token 去认证，registry 认不出是谁，于是 PUT 返回 **404**
+      # （不是 401/403），日志里看着像「包不存在」，极具误导性。
+      #
+      # 清空它，npm 才会回落到 OIDC 那条路（provenance 签名用的就是 OIDC，那步一直是成的）。
+      # 前两次 run 都是踩这个，见 run#1 / run#2 日志。
+      - name: 清掉占位 NODE_AUTH_TOKEN
+        run: |
+          echo "NODE_AUTH_TOKEN=" >> "$GITHUB_ENV"
+          # 同时把 .npmrc 里那行占位 token 注释掉，双保险
+          if [ -f "$NPM_CONFIG_USERCONFIG" ]; then
+            sed -i 's|^//registry.npmjs.org/:_authToken=.*|# &|' "$NPM_CONFIG_USERCONFIG" || true
+            echo "--- .npmrc ---"; cat "$NPM_CONFIG_USERCONFIG"
+          fi
+
       # ---------- 发布前自检：一条红的就不发 ----------
       - name: 契约自检
         run: |
