@@ -1,0 +1,60 @@
+name: publish
+
+# 只在打 tag（v1.2.3）时触发。平时 push / PR 不会跑这个。
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# 必需：OIDC 让 npm 验证「这个请求真的来自这个仓库」
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Trusted Publishing 需要 Node 22.14+（内置支持 npm provenance）
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # ---------- 发布前自检：一条红的就不发 ----------
+      - name: 契约自检
+        run: |
+          for f in contract path-detect chip-detect storage-scan log-race; do
+            echo "=== $f ==="
+            node --test "test/$f.test.mjs"
+          done
+
+      # ---------- 版本一致性：tag、package.json、README 首条必须相同 ----------
+      - name: 校验版本一致性
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          README=$(grep -oP '^### \K[0-9]+\.[0-9]+\.[0-9]+' README.md | head -1)
+          echo "tag=$TAG  package.json=$PKG  README=$README"
+          if [ "$TAG" != "$PKG" ] || [ "$TAG" != "$README" ]; then
+            echo "::error::版本不一致：tag=$TAG package.json=$PKG README=$README"
+            exit 1
+          fi
+
+      # ---------- 确认包里没有多余文件 ----------
+      - name: 打包清单检查
+        run: |
+          npm pack --dry-run 2>&1 | tee /tmp/pack.txt
+          for bad in test/ .github/ node_modules/ .ctx-test/ backups/; do
+            if grep -q "$bad" /tmp/pack.txt; then
+              echo "::error::打包内容里出现了 $bad"
+              exit 1
+            fi
+          done
+
+      # ---------- 发布：用 OIDC，不需要任何 token ----------
+      - name: Publish to npm
+        # --provenance 会生成公开可验证的构建来源证明，包页面显示 Provenance 徽章
+        run: npm publish --provenance --access public
