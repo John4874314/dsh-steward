@@ -49,6 +49,35 @@ This plugin does all five, in **one bundle, one switch, one settings page**.
 
 ## Changelog
 
+### 1.7.6
+
+**Releasing is now driven by a tag, with no long-lived credential involved.**
+
+No feature changes in this version — what changed is *how* it ships:
+
+| Before | Now |
+| --- | --- |
+| Local `pnpm publish` plus manual 2FA | Push a tag; GitHub Actions publishes |
+| Tokens that expire (90 days) and must be rotated | **No token at all** |
+| Package contents eyeballed by hand | Three gates in the workflow |
+
+New `.github/workflows/publish.yml`, triggered only on `v*.*.*` tags —
+ordinary pushes and PRs never run it. Before publishing it checks:
+
+1. **All five test files pass** — one red and it stops
+2. **Tag / `package.json` / first README version all agree** — so it cannot ship a
+   self-contradictory release (README says 1.7.5, package says 1.7.6)
+3. **The tarball contains no `test/`, `.github/`, `node_modules/`** — so source-only
+   files never leak into the package
+
+Publishing uses `npm publish --provenance`: npm verifies the package really was built
+from this repository, and the package page shows a **Provenance badge**. The workflow
+needs only `contents: read` + `id-token: write` — far smaller than a token, and there is
+nothing secret to leak.
+
+Why now: npm has announced that granular tokens able to bypass 2FA for direct publishing
+are being retired. Better to migrate once than to be forced later.
+
 ### 1.7.5
 
 **The titlebar button is no longer called "Restart" — it is now "Actions".**
@@ -329,7 +358,7 @@ Replace `<profile>` with your profile name (usually `desktop` for the desktop ap
 ### Option 1 — tarball (recommended, no git needed)
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.7.5
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.7.6
 ```
 
 No local `git` required, and no direct `github.com:443` access required — it only

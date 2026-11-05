@@ -47,6 +47,32 @@ DSH 原生把「对话」放在侧边栏，但：
 
 ## 更新日志
 
+### 1.7.6
+
+**发布改成打 tag 自动跑，不再需要任何长期凭据。**
+
+这一版没有功能变化，改的是「怎么发版」：
+
+| 以前 | 现在 |
+| --- | --- |
+| 本机 `pnpm publish` + 手动过 2FA | 打 tag，GitHub Actions 自己发 |
+| 需要定期更换 token（90 天到期） | **不需要任何 token** |
+| 发包内容靠人工看 | workflow 里三条检查卡住 |
+
+新增 `.github/workflows/publish.yml`，只在 push `v*.*.*` 格式的 tag 时触发，
+平时 push / PR 不会跑。发布前依次校验：
+
+1. **五个测试文件全过** —— 一条红的就停，不发
+2. **tag / `package.json` / README 首条版本三者一致** —— 防止发出去一个自相矛盾（README 说 1.7.5、包里是 1.7.6）的版本
+3. **打包清单里没有 `test/` `.github/` `node_modules/` 等** —— 防止把源码以外的东西发上去
+
+发布用 `npm publish --provenance`：npm 会验证「这个包确实从 `John4874314/dsh-steward`
+这个仓库的这次构建来」，包页面显示 **Provenance 徽章**。权限只要
+`contents: read` + `id-token: write`，比 token 的路子小得多，也没有能泄露的东西。
+
+为什么这么做：npm 已公告「能绕过 2FA 直接发布的 granular token」会关停。
+长痛不如短痛，一次换掉。
+
 ### 1.7.5
 
 **把标题栏那个按钮从「重启」改名为「操作」。**
@@ -483,7 +509,7 @@ icon.svg: icon must remain inside its package directory
 ### 方式一：tarball（推荐，不依赖 git）
 
 ```sh
-dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.7.5
+dsh plugin --profile <profile> add https://codeload.github.com/John4874314/dsh-steward/tar.gz/refs/tags/v1.7.6
 ```
 
 不要求本机装 git，也不要求 `github.com:443` 可直连 —— 只走 `codeload.github.com`。
