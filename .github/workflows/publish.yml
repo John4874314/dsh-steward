@@ -19,27 +19,22 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # Trusted Publishing 需要 Node 22.14+（内置支持 npm provenance）
+          # 只要 Node 本身。**刻意不传 registry-url**：
+          # 传了它，setup-node 会往 .npmrc 写一行 `_authToken=${NODE_AUTH_TOKEN}`
+          # 并注入一个占位值（日志里是 XXXXX-XXXXX-XXXXX-XXXXX）。npm 会拿这个假
+          # token 去认证，registry 认不出是谁 → PUT 返回 **404**（不是 401/403），
+          # 看着像「包不存在」，极难从错误信息推回真因。
+          #
+          # 不传 registry-url，.npmrc 就不会有那行，npm 直接走 OIDC。
           node-version: 22
-          registry-url: https://registry.npmjs.org
 
-      # ---------- 关键：清掉 setup-node 塞进来的占位 token ----------
-      # registry-url 会让 setup-node 往 .npmrc 写一行
-      #   //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
-      # 并注入一个占位值（日志里显示 XXXXX-XXXXX-XXXXX-XXXXX）。
-      # npm 会拿这个假 token 去认证，registry 认不出是谁，于是 PUT 返回 **404**
-      # （不是 401/403），日志里看着像「包不存在」，极具误导性。
-      #
-      # 清空它，npm 才会回落到 OIDC 那条路（provenance 签名用的就是 OIDC，那步一直是成的）。
-      # 前两次 run 都是踩这个，见 run#1 / run#2 日志。
-      - name: 清掉占位 NODE_AUTH_TOKEN
+      # Trusted Publishing / OIDC 需要 npm >= 11.5.0。
+      # Node 22 自带的是 npm 10.x，不升会报 ENEEDAUTH（老 npm 只认 token，不认 OIDC）。
+      - name: 升级 npm（OIDC 需要 >= 11.5.0）
         run: |
-          echo "NODE_AUTH_TOKEN=" >> "$GITHUB_ENV"
-          # 同时把 .npmrc 里那行占位 token 注释掉，双保险
-          if [ -f "$NPM_CONFIG_USERCONFIG" ]; then
-            sed -i 's|^//registry.npmjs.org/:_authToken=.*|# &|' "$NPM_CONFIG_USERCONFIG" || true
-            echo "--- .npmrc ---"; cat "$NPM_CONFIG_USERCONFIG"
-          fi
+          npm --version
+          npm install -g npm@latest
+          npm --version
 
       # ---------- 发布前自检：一条红的就不发 ----------
       - name: 契约自检
@@ -74,10 +69,6 @@ jobs:
 
       # ---------- 发布：用 OIDC，不需要任何 token ----------
       - name: Publish to npm
-        # --provenance 会生成公开可验证的构建来源证明，包页面显示 Provenance 徽章。
-        #
-        # 刻意**不加** --access public：这个包名没有 scope（不是 @org/name），
-        # 无 scope 包本来就是 public，而 npm 的发布接口收到 access 字段会返回 404
-        # （不是 403），日志里看起来像「没权限」，实际是参数不被接受。
-        # 第一次跑就是踩了这个，见 commit 后的日志。
+        # --provenance：生成公开可验证的构建来源证明，包页面显示 Provenance 徽章。
+        # 不加 --access public：这个包名没有 scope，本身就是 public。
         run: npm publish --provenance
